@@ -370,6 +370,25 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
   }
 })
 
+app.post("/api/whatsapp/sessions/:sessionId/start", async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    console.log("[v0] POST /api/whatsapp/sessions/:sessionId/start:", sessionId)
+
+    await whatsappManager.initializeSession(sessionId)
+
+    await supabase.from("whatsapp_sessions").update({ status: "qr" }).eq("session_id", sessionId)
+
+    res.json({
+      success: true,
+      message: "Sessão iniciando - aguarde o QR code",
+    })
+  } catch (error) {
+    console.error("Error starting session:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
 app.get("/api/whatsapp/sessions/:sessionId/qr", async (req, res) => {
   try {
     const { sessionId } = req.params
@@ -399,6 +418,7 @@ app.get("/api/whatsapp/sessions/:sessionId/qr", async (req, res) => {
     }
 
     res.json({
+      qr: qrCodeDataUrl,
       qrCode: qrCodeDataUrl,
       status: session.status,
       message: qrCodeDataUrl ? "Escaneie o QR code no WhatsApp" : "Conecte a sessão para gerar QR code",
@@ -439,6 +459,98 @@ app.post("/api/whatsapp/sessions/:sessionId/connect", async (req, res) => {
     })
   } catch (error) {
     console.error("Error connecting session:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+app.get("/api/whatsapp/:sessionId/messages", async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    console.log("[v0] GET /api/whatsapp/:sessionId/messages:", sessionId)
+
+    const { data: messages, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("session_id", sessionId)
+      .order("timestamp", { ascending: true })
+
+    if (error) throw error
+
+    res.json({
+      success: true,
+      messages: messages || [],
+      data: messages || [],
+      total: messages?.length || 0,
+    })
+  } catch (error) {
+    console.error("[v0] Error fetching messages:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.post("/api/whatsapp/:sessionId/messages", async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    const { to, body } = req.body
+
+    console.log("[v0] POST /api/whatsapp/:sessionId/messages:", { sessionId, to, body })
+
+    if (!to || !body) {
+      return res.status(400).json({ success: false, error: "to and body are required" })
+    }
+
+    const content = {
+      type: "text",
+      text: body,
+    }
+
+    const sentMessage = await whatsappManager.sendMessage(sessionId, to, content)
+
+    const messageData = {
+      id: Date.now().toString(),
+      session_id: sessionId,
+      from_number: sessionId,
+      to_number: to,
+      body: body,
+      timestamp: new Date().toISOString(),
+      direction: "outgoing",
+      status: "sent",
+    }
+
+    await supabase.from("messages").insert([messageData])
+
+    if (global.io) {
+      global.io.to(sessionId).emit("whatsapp:message", messageData)
+    }
+
+    res.json({
+      success: true,
+      message: "Message sent successfully",
+      messageId: sentMessage?.id?._serialized,
+    })
+  } catch (error) {
+    console.error("[v0] Error sending message:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.delete("/api/whatsapp/sessions/:sessionId", async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    console.log("[v0] DELETE /api/whatsapp/sessions/:sessionId:", sessionId)
+
+    await whatsappManager.disconnectSession(sessionId)
+
+    const { error } = await supabase.from("whatsapp_sessions").delete().eq("session_id", sessionId)
+
+    if (error) throw error
+
+    res.json({
+      success: true,
+      message: "Sessão excluída com sucesso",
+    })
+  } catch (error) {
+    console.error("Error deleting session:", error)
     res.status(500).json({ error: error.message })
   }
 })
@@ -501,6 +613,7 @@ app.post("/api/whatsapp/:sessionId/send", async (req, res) => {
   }
 })
 
+// Adding missing /api/whatsapp/:sessionId/status endpoint
 app.get("/api/whatsapp/:sessionId/status", async (req, res) => {
   try {
     const { sessionId } = req.params
@@ -518,13 +631,10 @@ app.get("/api/whatsapp/:sessionId/status", async (req, res) => {
 
     res.json({
       success: true,
-      data: {
-        sessionId,
-        status: isConnected ? "connected" : session.status,
-        isConnected,
-        phoneNumber: session.phone_number,
-        lastConnected: session.last_connected,
-      },
+      state: isConnected ? "connected" : session.status,
+      isConnected,
+      phoneNumber: session.phone_number,
+      lastConnected: session.last_connected,
     })
   } catch (error) {
     console.error("[v0] Error fetching session status:", error)

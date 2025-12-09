@@ -57,17 +57,27 @@ export default function WhatsAppPage() {
   const [socket, setSocket] = useState<Socket | null>(null)
 
   useEffect(() => {
-    const socketUrl = process.env.NEXT_PUBLIC_API_URL
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL
 
-    if (!socketUrl) {
-      console.error("[SOCKET ERROR] NEXT_PUBLIC_API_URL not configured. WebSocket will not connect.")
-      alert("Erro de configuração: NEXT_PUBLIC_API_URL não está definida. Contate o suporte.")
+    if (!apiUrl) {
+      console.error(
+        "[SOCKET ERROR] CRITICAL: NEXT_PUBLIC_API_URL não está configurada. Adicione em Vercel > Settings > Environment Variables",
+      )
+      alert(
+        "Erro de configuração: NEXT_PUBLIC_API_URL não definida.\n\nPara corrigir:\n1. Acesse Vercel Dashboard\n2. Vá em Settings > Environment Variables\n3. Adicione NEXT_PUBLIC_API_URL=https://dwxw-production.up.railway.app\n4. Clique em Redeploy",
+      )
       return
     }
 
-    console.log("[SOCKET] Initializing connection to:", socketUrl)
+    if (apiUrl.includes("localhost")) {
+      console.warn(
+        "[SOCKET WARNING] NEXT_PUBLIC_API_URL está apontando para localhost. Isso não vai funcionar em produção!",
+      )
+    }
 
-    const socketConnection = io(socketUrl, {
+    console.log("[SOCKET] Initializing connection to:", apiUrl)
+
+    const socketConnection = io(apiUrl, {
       transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionDelay: 1000,
@@ -75,11 +85,11 @@ export default function WhatsAppPage() {
     })
 
     socketConnection.on("connect", () => {
-      console.log("[SOCKET] Connected successfully to", socketUrl)
+      console.log("[SOCKET] Connected successfully to", apiUrl)
     })
 
     socketConnection.on("connect_error", (error) => {
-      console.error("[SOCKET ERROR] Failed to connect to", socketUrl, "-", error.message)
+      console.error("[SOCKET ERROR] Failed to connect to", apiUrl, "-", error.message)
     })
 
     socketConnection.on("whatsapp:qr", ({ sessionId, qr }) => {
