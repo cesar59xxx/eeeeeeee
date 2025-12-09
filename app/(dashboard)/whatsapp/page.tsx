@@ -57,14 +57,15 @@ export default function WhatsAppPage() {
   const [socket, setSocket] = useState<Socket | null>(null)
 
   useEffect(() => {
-    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || process.env.NEXT_PUBLIC_API_URL
+    const socketUrl = process.env.NEXT_PUBLIC_API_URL
 
     if (!socketUrl) {
-      console.error("[SOCKET ERROR] NEXT_PUBLIC_SOCKET_URL or NEXT_PUBLIC_API_URL not configured")
+      console.error("[SOCKET ERROR] NEXT_PUBLIC_API_URL not configured. WebSocket will not connect.")
+      alert("Erro de configuração: NEXT_PUBLIC_API_URL não está definida. Contate o suporte.")
       return
     }
 
-    console.log("[v0] Connecting WebSocket to:", socketUrl)
+    console.log("[SOCKET] Initializing connection to:", socketUrl)
 
     const socketConnection = io(socketUrl, {
       transports: ["websocket", "polling"],
@@ -74,20 +75,20 @@ export default function WhatsAppPage() {
     })
 
     socketConnection.on("connect", () => {
-      console.log("[v0] WebSocket connected to", socketUrl)
+      console.log("[SOCKET] Connected successfully to", socketUrl)
     })
 
     socketConnection.on("connect_error", (error) => {
-      console.error("[SOCKET ERROR] Failed to connect:", socketUrl, error.message)
+      console.error("[SOCKET ERROR] Failed to connect to", socketUrl, "-", error.message)
     })
 
     socketConnection.on("whatsapp:qr", ({ sessionId, qr }) => {
-      console.log("[v0] Received QR for session:", sessionId)
+      console.log("[SOCKET] Received QR for session:", sessionId)
       setQrCodeData((prev) => (prev?.sessionId === sessionId ? { ...prev, qrCode: qr } : prev))
     })
 
     socketConnection.on("whatsapp:status", ({ sessionId, status }) => {
-      console.log("[v0] Status update:", sessionId, status)
+      console.log("[SOCKET] Status update:", sessionId, status)
 
       setSessions((prev) =>
         prev.map((s) =>
@@ -108,7 +109,7 @@ export default function WhatsAppPage() {
     })
 
     socketConnection.on("whatsapp:message", (messageData) => {
-      console.log("[v0] New message:", messageData)
+      console.log("[SOCKET] New message received:", messageData)
 
       const newMsg: Message = {
         id: messageData.id || Date.now().toString(),
@@ -236,7 +237,7 @@ export default function WhatsAppPage() {
       }, 1000)
     } catch (error: any) {
       console.error("[API ERROR] Failed to create session:", error.message)
-      alert(error.message || "Erro ao criar sessão. Verifique se o backend está acessível.")
+      alert(`Erro ao criar sessão: ${error.message}`)
     }
   }
 
@@ -271,14 +272,14 @@ export default function WhatsAppPage() {
             await loadSessions()
           }
         } catch (error: any) {
-          console.error("[API ERROR] Failed to poll QR/status:", error.message)
+          console.error("[API ERROR] QR polling failed:", error.message)
         }
       }, 2000)
 
       setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000)
     } catch (error: any) {
       console.error("[API ERROR] Failed to start session:", error.message)
-      alert(error.message || "Erro ao iniciar sessão. Verifique se o backend está acessível.")
+      alert(`Erro ao iniciar sessão: ${error.message}`)
     }
   }
 

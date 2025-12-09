@@ -1,17 +1,32 @@
 import { io, type Socket } from "socket.io-client"
 
+const getAPIConfig = () => {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL
+
+  if (!apiUrl) {
+    throw new Error(
+      "CRITICAL: NEXT_PUBLIC_API_URL environment variable is not set. Please configure it in Vercel/Railway settings.",
+    )
+  }
+
+  return {
+    baseURL: apiUrl,
+    socketURL: apiUrl, // Socket.IO uses the same base URL
+  }
+}
+
 class APIClient {
   private baseURL: string
   private token: string | null = null
 
   constructor() {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL
-
-    if (!apiUrl) {
-      console.error("[API ERROR] NEXT_PUBLIC_API_URL is not set. API calls will fail.")
+    try {
+      const config = getAPIConfig()
+      this.baseURL = config.baseURL
+      console.log("[API] Configured with baseURL:", this.baseURL)
+    } catch (error: any) {
+      console.error("[API ERROR] Configuration failed:", error.message)
       this.baseURL = ""
-    } else {
-      this.baseURL = apiUrl
     }
 
     if (typeof window !== "undefined") {
@@ -21,20 +36,24 @@ class APIClient {
 
   setToken(token: string) {
     this.token = token
-    localStorage.setItem("accessToken", token)
+    if (typeof window !== "undefined") {
+      localStorage.setItem("accessToken", token)
+    }
   }
 
   clearToken() {
     this.token = null
-    localStorage.removeItem("accessToken")
-    localStorage.removeItem("refreshToken")
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("accessToken")
+      localStorage.removeItem("refreshToken")
+    }
   }
 
   private async request(endpoint: string, options: RequestInit = {}) {
     if (!this.baseURL) {
-      const error = new Error("API URL not configured. Please set NEXT_PUBLIC_API_URL environment variable.")
-      console.error("[API ERROR]", error.message)
-      throw error
+      throw new Error(
+        "API URL not configured. Set NEXT_PUBLIC_API_URL=https://dwxw-production.up.railway.app in Vercel",
+      )
     }
 
     const headers: HeadersInit = {
@@ -60,7 +79,9 @@ class APIClient {
           return this.request(endpoint, options)
         } else {
           this.clearToken()
-          window.location.href = "/login"
+          if (typeof window !== "undefined") {
+            window.location.href = "/login"
+          }
           throw new Error("Session expired")
         }
       }
@@ -78,6 +99,8 @@ class APIClient {
   }
 
   private async refreshToken(): Promise<boolean> {
+    if (typeof window === "undefined") return false
+
     const refreshToken = localStorage.getItem("refreshToken")
     if (!refreshToken) return false
 
@@ -95,7 +118,7 @@ class APIClient {
         return true
       }
     } catch (error) {
-      console.error("Failed to refresh token:", error)
+      console.error("[API ERROR] Token refresh failed:", error)
     }
 
     return false
@@ -115,7 +138,9 @@ class APIClient {
     })
 
     this.setToken(result.tokens.accessToken)
-    localStorage.setItem("refreshToken", result.tokens.refreshToken)
+    if (typeof window !== "undefined") {
+      localStorage.setItem("refreshToken", result.tokens.refreshToken)
+    }
 
     return result
   }
@@ -185,49 +210,54 @@ class APIClient {
 
 export const apiClient = new APIClient()
 
-// Socket.IO Client
 class SocketClient {
   private socket: Socket | null = null
 
-  connect(token: string) {
-    if (this.socket?.connected) return this.socket
-
-    const socketUrl =
-      process.env.NEXT_PUBLIC_SOCKET_URL || process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL
-
-    if (!socketUrl) {
-      console.error("[SOCKET ERROR] NEXT_PUBLIC_SOCKET_URL or NEXT_PUBLIC_API_URL not set. WebSocket will not connect.")
-      return null
+  connect(token?: string) {
+    if (this.socket?.connected) {
+      console.log("[SOCKET] Already connected")
+      return this.socket
     }
 
-    console.log("[v0] Connecting to WebSocket:", socketUrl)
+    try {
+      const config = getAPIConfig()
+      const socketURL = config.socketURL
 
-    this.socket = io(socketUrl, {
-      auth: { token },
-      transports: ["websocket", "polling"],
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
-    })
+      console.log("[SOCKET] Connecting to:", socketURL)
 
-    this.socket.on("connect", () => {
-      console.log("[v0] Socket Connected to", socketUrl)
-    })
+      this.socket = io(socketURL, {
+        auth: token ? { token } : undefined,
+        transports: ["websocket", "polling"],
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionAttempts: 5,
+      })
 
-    this.socket.on("disconnect", () => {
-      console.log("[v0] Socket Disconnected")
-    })
+      this.socket.on("connect", () => {
+        console.log("[SOCKET] Connected successfully to", socketURL)
+      })
 
-    this.socket.on("connect_error", (error) => {
-      console.error("[SOCKET ERROR] Connection failed:", socketUrl, error.message)
-    })
+      this.socket.on("disconnect", () => {
+        console.log("[SOCKET] Disconnected")
+      })
 
-    return this.socket
+      this.socket.on("connect_error", (error) => {
+        console.error("[SOCKET ERROR]", socketURL, error.message)
+      })
+
+      return this.socket
+    } catch (error: any) {
+      console.error("[SOCKET ERROR] Failed to initialize:", error.message)
+      return null
+    }
   }
 
   disconnect() {
-    this.socket?.disconnect()
-    this.socket = null
+    if (this.socket) {
+      this.socket.disconnect()
+      this.socket = null
+      console.log("[SOCKET] Disconnected manually")
+    }
   }
 
   getSocket() {
