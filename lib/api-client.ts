@@ -5,8 +5,14 @@ class APIClient {
   private token: string | null = null
 
   constructor() {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"
-    this.baseURL = apiUrl
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL
+
+    if (!apiUrl) {
+      console.error("[API ERROR] NEXT_PUBLIC_API_URL is not set. API calls will fail.")
+      this.baseURL = ""
+    } else {
+      this.baseURL = apiUrl
+    }
 
     if (typeof window !== "undefined") {
       this.token = localStorage.getItem("accessToken")
@@ -25,6 +31,12 @@ class APIClient {
   }
 
   private async request(endpoint: string, options: RequestInit = {}) {
+    if (!this.baseURL) {
+      const error = new Error("API URL not configured. Please set NEXT_PUBLIC_API_URL environment variable.")
+      console.error("[API ERROR]", error.message)
+      throw error
+    }
+
     const headers: HeadersInit = {
       "Content-Type": "application/json",
       ...options.headers,
@@ -34,8 +46,10 @@ class APIClient {
       headers["Authorization"] = `Bearer ${this.token}`
     }
 
+    const fullUrl = `${this.baseURL}${endpoint}`
+
     try {
-      const response = await fetch(`${this.baseURL}${endpoint}`, {
+      const response = await fetch(fullUrl, {
         ...options,
         headers,
       })
@@ -58,7 +72,7 @@ class APIClient {
 
       return await response.json()
     } catch (error: any) {
-      console.error("[v0] Request Failed:", error.message)
+      console.error("[API ERROR]", fullUrl, error.message)
       throw error
     }
   }
@@ -179,18 +193,25 @@ class SocketClient {
     if (this.socket?.connected) return this.socket
 
     const socketUrl =
-      process.env.NEXT_PUBLIC_SOCKET_URL ||
-      process.env.NEXT_PUBLIC_API_URL ||
-      process.env.NEXT_PUBLIC_BACKEND_URL ||
-      "http://localhost:3001"
+      process.env.NEXT_PUBLIC_SOCKET_URL || process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_BACKEND_URL
+
+    if (!socketUrl) {
+      console.error("[SOCKET ERROR] NEXT_PUBLIC_SOCKET_URL or NEXT_PUBLIC_API_URL not set. WebSocket will not connect.")
+      return null
+    }
+
+    console.log("[v0] Connecting to WebSocket:", socketUrl)
 
     this.socket = io(socketUrl, {
       auth: { token },
-      transports: ["websocket"],
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5,
     })
 
     this.socket.on("connect", () => {
-      console.log("[v0] Socket Connected")
+      console.log("[v0] Socket Connected to", socketUrl)
     })
 
     this.socket.on("disconnect", () => {
@@ -198,7 +219,7 @@ class SocketClient {
     })
 
     this.socket.on("connect_error", (error) => {
-      console.error("[v0] Socket connection error:", error)
+      console.error("[SOCKET ERROR] Connection failed:", socketUrl, error.message)
     })
 
     return this.socket

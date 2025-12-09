@@ -38,6 +38,9 @@ export default function DiagnosticsPage() {
         message: "NEXT_PUBLIC_API_URL não configurada",
         details: "Configure NEXT_PUBLIC_API_URL na Vercel com a URL do Railway",
       })
+      setResults(diagnostics)
+      setIsRunning(false)
+      return
     } else {
       diagnostics.push({
         test: "Variáveis de Ambiente",
@@ -46,7 +49,7 @@ export default function DiagnosticsPage() {
       })
     }
 
-    const finalUrl = apiUrl || backendUrl || "http://localhost:3001"
+    const finalUrl = apiUrl || backendUrl
 
     // 2. Testar conectividade com backend - Root
     try {
@@ -295,14 +298,14 @@ export default function DiagnosticsPage() {
               <li>Verifique se a URL está correta nas variáveis de ambiente da Vercel</li>
               <li>Acesse o Railway e confirme que o serviço está rodando</li>
               <li>Verifique os logs do Railway para erros</li>
-              <li>Confirme que a porta 5000 está acessível</li>
+              <li>Confirme que a porta está acessível</li>
             </ol>
           </div>
 
           <div>
-            <h3 className="font-semibold mb-2">Configuração correta das variáveis:</h3>
+            <h3 className="font-semibold mb-2">Configuração correta das variáveis na Vercel:</h3>
             <pre className="bg-muted p-4 rounded-lg text-sm">
-              {`NEXT_PUBLIC_API_URL=https://whatsapp-api-web-oi-production.up.railway.app
+              {`NEXT_PUBLIC_API_URL=https://seu-projeto.up.railway.app
 NEXT_PUBLIC_SUPABASE_URL=https://...supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJh...`}
             </pre>
@@ -311,7 +314,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJh...`}
           <div>
             <h3 className="font-semibold mb-2">Abra o Console do Navegador (F12)</h3>
             <p className="text-sm text-muted-foreground">
-              Todos os logs detalhados começam com [v0] - procure por mensagens de erro relacionadas a fetch ou CORS
+              Todos os logs detalhados começam com [v0] ou [API ERROR] ou [SOCKET ERROR] - procure por mensagens de erro
+              relacionadas a fetch, CORS ou conexão
             </p>
           </div>
         </CardContent>

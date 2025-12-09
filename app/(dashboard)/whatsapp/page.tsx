@@ -57,15 +57,28 @@ export default function WhatsAppPage() {
   const [socket, setSocket] = useState<Socket | null>(null)
 
   useEffect(() => {
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000"
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || process.env.NEXT_PUBLIC_API_URL
 
-    const socketConnection = io(backendUrl, {
+    if (!socketUrl) {
+      console.error("[SOCKET ERROR] NEXT_PUBLIC_SOCKET_URL or NEXT_PUBLIC_API_URL not configured")
+      return
+    }
+
+    console.log("[v0] Connecting WebSocket to:", socketUrl)
+
+    const socketConnection = io(socketUrl, {
       transports: ["websocket", "polling"],
       reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5,
     })
 
     socketConnection.on("connect", () => {
-      console.log("[v0] WebSocket connected")
+      console.log("[v0] WebSocket connected to", socketUrl)
+    })
+
+    socketConnection.on("connect_error", (error) => {
+      console.error("[SOCKET ERROR] Failed to connect:", socketUrl, error.message)
     })
 
     socketConnection.on("whatsapp:qr", ({ sessionId, qr }) => {
@@ -222,8 +235,8 @@ export default function WhatsAppPage() {
         handleStartSession(result.session.sessionId)
       }, 1000)
     } catch (error: any) {
-      console.error("[v0] Error creating session:", error)
-      alert(error.message || "Erro ao criar sessão")
+      console.error("[API ERROR] Failed to create session:", error.message)
+      alert(error.message || "Erro ao criar sessão. Verifique se o backend está acessível.")
     }
   }
 
@@ -257,15 +270,15 @@ export default function WhatsAppPage() {
             setQrCodeData(null)
             await loadSessions()
           }
-        } catch (error) {
-          console.error("[v0] Error polling QR/status:", error)
+        } catch (error: any) {
+          console.error("[API ERROR] Failed to poll QR/status:", error.message)
         }
       }, 2000)
 
       setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000)
     } catch (error: any) {
-      console.error("[v0] Error starting session:", error)
-      alert(error.message || "Erro ao iniciar sessão")
+      console.error("[API ERROR] Failed to start session:", error.message)
+      alert(error.message || "Erro ao iniciar sessão. Verifique se o backend está acessível.")
     }
   }
 
