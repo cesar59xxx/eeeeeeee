@@ -81,21 +81,19 @@ class WhatsAppManager {
         console.log(`[${sessionId}] 📱 QR Code gerado`)
 
         try {
-          // Atualizar no banco com string QR original
           await supabase
             .from("whatsapp_sessions")
             .update({
               status: "qr",
-              qr_code: qr, // String original sem conversão
               updated_at: new Date().toISOString(),
             })
             .eq("session_id", sessionId)
 
-          // Emitir via Socket.IO apenas a string original
+          // Emit via Socket.IO with original QR string
           if (global.io) {
             global.io.to(sessionId).emit("whatsapp:qr", {
               sessionId,
-              qr, // String original do QR
+              qr, // Only send via WebSocket, never save in DB
             })
             // Also emit globally for backward compatibility
             global.io.emit("whatsapp:qr", {
@@ -104,7 +102,7 @@ class WhatsAppManager {
             })
           }
 
-          console.log(`[${sessionId}] QR emitido via WebSocket`)
+          console.log(`[${sessionId}] QR emitido via WebSocket (não salvo no banco)`)
         } catch (error) {
           console.error(`[${sessionId}] Erro ao processar QR:`, error)
         }
@@ -160,7 +158,6 @@ class WhatsAppManager {
           .update({
             status: "connected",
             phone_number: info.wid.user,
-            qr_code: null,
             last_connected: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           })
