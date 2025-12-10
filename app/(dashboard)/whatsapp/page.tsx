@@ -1,16 +1,19 @@
 "use client"
 
+import { Separator } from "@/components/ui/separator"
+
+import { ScrollArea } from "@/components/ui/scroll-area"
+
 import { useEffect, useState, useCallback } from "react"
-import { apiClient } from "@/lib/api-client"
+import { io, type Socket } from "socket.io-client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Plus, Power, Trash2, Send, MessageCircle, User } from "lucide-react"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { io, type Socket } from "socket.io-client"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
+import { apiClient } from "@/lib/api-client"
+import { config } from "@/lib/config"
 
 interface Session {
   _id: string
@@ -57,27 +60,12 @@ export default function WhatsAppPage() {
   const [socket, setSocket] = useState<Socket | null>(null)
 
   useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://eeeeeeee-production.up.railway.app"
+    const wsUrl = config.api.wsURL
 
-    if (!apiUrl) {
-      console.error(
-        "[SOCKET ERROR] CRITICAL: NEXT_PUBLIC_API_URL não está configurada. Adicione em Vercel > Settings > Environment Variables",
-      )
-      alert(
-        "Erro de configuração: NEXT_PUBLIC_API_URL não definida.\n\nPara corrigir:\n1. Acesse Vercel Dashboard\n2. Vá em Settings > Environment Variables\n3. Adicione NEXT_PUBLIC_API_URL=https://dwxw-production.up.railway.app\n4. Clique em Redeploy",
-      )
-      return
-    }
+    console.log("[SOCKET] Initializing connection to:", wsUrl)
 
-    if (apiUrl.includes("localhost")) {
-      console.warn(
-        "[SOCKET WARNING] NEXT_PUBLIC_API_URL está apontando para localhost. Isso não vai funcionar em produção!",
-      )
-    }
-
-    console.log("[SOCKET] Initializing connection to:", apiUrl)
-
-    const socketConnection = io(apiUrl, {
+    const socketConnection = io(wsUrl, {
       transports: ["websocket", "polling"],
       reconnection: true,
       reconnectionDelay: 1000,
@@ -85,11 +73,11 @@ export default function WhatsAppPage() {
     })
 
     socketConnection.on("connect", () => {
-      console.log("[SOCKET] Connected successfully to", apiUrl)
+      console.log("[SOCKET] ✅ Connected successfully")
     })
 
     socketConnection.on("connect_error", (error) => {
-      console.error("[SOCKET ERROR] Failed to connect to", apiUrl, "-", error.message)
+      console.error("[SOCKET ERROR] Failed to connect -", error.message)
     })
 
     socketConnection.on("whatsapp:qr", ({ sessionId, qr }) => {
@@ -107,6 +95,7 @@ export default function WhatsAppPage() {
                 ...s,
                 status: status === "ready" ? "connected" : status,
                 isConnected: status === "ready" || status === "connected",
+                qrCode: null,
               }
             : s,
         ),
@@ -160,7 +149,7 @@ export default function WhatsAppPage() {
       const response = await apiClient.getSessions()
       setSessions(response.sessions || response.data || [])
     } catch (error) {
-      console.error("[v0] Failed to load sessions:", error)
+      console.error("[API ERROR] Failed to load sessions:", error)
     } finally {
       setIsLoading(false)
     }
@@ -178,7 +167,7 @@ export default function WhatsAppPage() {
       const uniqueContacts = extractContactsFromMessages(response.messages || response.data || [])
       setContacts(uniqueContacts)
     } catch (error) {
-      console.error("[v0] Failed to load messages:", error)
+      console.error("[API ERROR] Failed to load messages:", error)
     }
   }, [])
 

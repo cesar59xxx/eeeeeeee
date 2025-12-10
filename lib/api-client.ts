@@ -1,33 +1,13 @@
 import { io, type Socket } from "socket.io-client"
-
-const getAPIConfig = () => {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL
-
-  if (!apiUrl) {
-    throw new Error(
-      "CRITICAL: NEXT_PUBLIC_API_URL environment variable is not set. Please configure it in Vercel/Railway settings.",
-    )
-  }
-
-  return {
-    baseURL: apiUrl,
-    socketURL: apiUrl, // Socket.IO uses the same base URL
-  }
-}
+import { config } from "./config"
 
 class APIClient {
   private baseURL: string
   private token: string | null = null
 
   constructor() {
-    try {
-      const config = getAPIConfig()
-      this.baseURL = config.baseURL
-      console.log("[API] Configured with baseURL:", this.baseURL)
-    } catch (error: any) {
-      console.error("[API ERROR] Configuration failed:", error.message)
-      this.baseURL = ""
-    }
+    this.baseURL = config.api.baseURL
+    console.log("[API] Initialized with baseURL:", this.baseURL)
 
     if (typeof window !== "undefined") {
       this.token = localStorage.getItem("accessToken")
@@ -50,12 +30,6 @@ class APIClient {
   }
 
   private async request(endpoint: string, options: RequestInit = {}) {
-    if (!this.baseURL) {
-      throw new Error(
-        "API URL not configured. Set NEXT_PUBLIC_API_URL=https://dwxw-production.up.railway.app in Vercel",
-      )
-    }
-
     const headers: HeadersInit = {
       "Content-Type": "application/json",
       ...options.headers,
@@ -71,6 +45,7 @@ class APIClient {
       const response = await fetch(fullUrl, {
         ...options,
         headers,
+        credentials: "include",
       })
 
       if (response.status === 401) {
@@ -88,7 +63,7 @@ class APIClient {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ error: "Unknown error" }))
-        throw new Error(error.error || `Request failed with status ${response.status}`)
+        throw new Error(error.error || error.message || `Request failed with status ${response.status}`)
       }
 
       return await response.json()
@@ -109,6 +84,7 @@ class APIClient {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refreshToken }),
+        credentials: "include",
       })
 
       if (response.ok) {
@@ -124,6 +100,7 @@ class APIClient {
     return false
   }
 
+  // Auth endpoints
   async register(data: any) {
     return this.request("/api/auth/register", {
       method: "POST",
@@ -185,8 +162,18 @@ class APIClient {
     return this.request(`/api/whatsapp/sessions/${sessionId}/status`)
   }
 
-  async getMessages(sessionId: string) {
-    return this.request(`/api/whatsapp/${sessionId}/messages`)
+  async getContacts(sessionId: string, limit?: number) {
+    const params = new URLSearchParams()
+    if (limit) params.set("limit", String(limit))
+    const query = params.toString() ? `?${params.toString()}` : ""
+    return this.request(`/api/whatsapp/${sessionId}/contacts${query}`)
+  }
+
+  async getMessages(sessionId: string, contactId?: string) {
+    const endpoint = contactId
+      ? `/api/whatsapp/${sessionId}/messages/${contactId}`
+      : `/api/whatsapp/${sessionId}/messages`
+    return this.request(endpoint)
   }
 
   async sendMessage(sessionId: string, data: { to: string; body: string }) {
@@ -196,6 +183,7 @@ class APIClient {
     })
   }
 
+  // Generic methods
   async get(endpoint: string) {
     return this.request(endpoint)
   }
@@ -219,44 +207,37 @@ class SocketClient {
       return this.socket
     }
 
-    try {
-      const config = getAPIConfig()
-      const socketURL = config.socketURL
+    const socketURL = config.api.wsURL
 
-      console.log("[SOCKET] Connecting to:", socketURL)
+    console.log("[SOCKET] Connecting to:", socketURL)
 
-      this.socket = io(socketURL, {
-        auth: token ? { token } : undefined,
-        transports: ["websocket", "polling"],
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionAttempts: 5,
-      })
+    this.socket = io(socketURL, {
+      auth: token ? { token } : undefined,
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 5,
+    })
 
-      this.socket.on("connect", () => {
-        console.log("[SOCKET] Connected successfully to", socketURL)
-      })
+    this.socket.on("connect", () => {
+      console.log("[SOCKET] ✅ Connected successfully")
+    })
 
-      this.socket.on("disconnect", () => {
-        console.log("[SOCKET] Disconnected")
-      })
+    this.socket.on("disconnect", () => {
+      console.log("[SOCKET] Disconnected")
+    })
 
-      this.socket.on("connect_error", (error) => {
-        console.error("[SOCKET ERROR]", socketURL, error.message)
-      })
+    this.socket.on("connect_error", (error) => {
+      console.error("[SOCKET ERROR]", error.message)
+    })
 
-      return this.socket
-    } catch (error: any) {
-      console.error("[SOCKET ERROR] Failed to initialize:", error.message)
-      return null
-    }
+    return this.socket
   }
 
   disconnect() {
     if (this.socket) {
       this.socket.disconnect()
       this.socket = null
-      console.log("[SOCKET] Disconnected manually")
     }
   }
 

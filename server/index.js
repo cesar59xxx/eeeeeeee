@@ -764,19 +764,21 @@ app.use((req, res) => {
   })
 })
 
-const PORT = Number.parseInt(process.env.PORT, 10) || 5000
+const PORT = Number.parseInt(process.env.PORT, 10) || 8080
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`
 ╔═══════════════════════════════════╗
-║   ✅ SERVIDOR FUNCIONANDO!        ║
+║   ✅ SERVIDOR ONLINE!             ║
 ╠═══════════════════════════════════╣
 ║ 🔗 Porta: ${PORT.toString().padEnd(23)}║
-║ 🌐 Health: /health ${" ".repeat(15)}║
+║ 🌐 Health: /health                ║
 ║ 📱 Frontend: ${(process.env.FRONTEND_URL || "não configurado").substring(0, 18).padEnd(18)}║
-║ 💬 WhatsApp: ATIVO ${" ".repeat(14)}║
+║ 💬 WhatsApp: ATIVO                ║
 ╚═══════════════════════════════════╝
   `)
+
+  console.log("API online", PORT)
 })
 
 process.on("SIGTERM", () => {
