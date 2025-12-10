@@ -83,6 +83,10 @@ export default function WhatsAppPage() {
       if (status === "ready" || status === "connected") {
         setQrDialogOpen(false)
         setQrCodeData(null)
+
+        if (selectedSessionId === sessionId) {
+          loadContacts(sessionId)
+        }
       }
     })
 
@@ -100,24 +104,24 @@ export default function WhatsAppPage() {
         status: messageData.status || "delivered",
       }
 
-      setMessages((prev) => {
-        if (newMsg.session_id === selectedSessionId) {
-          return [...prev, newMsg]
-        }
-        return prev
-      })
-
-      updateContactsList(newMsg)
+      if (newMsg.session_id === selectedSessionId) {
+        setMessages((prev) => [...prev, newMsg])
+        updateContactsList(newMsg)
+      }
     })
 
     return () => {
       socketClient.disconnect()
     }
-  }, [])
+  }, [selectedSessionId])
 
   useEffect(() => {
     if (selectedSessionId) {
-      socketClient.emit("join-session", selectedSessionId)
+      const socket = socketClient.getSocket()
+      if (socket) {
+        console.log("[v0] Joining session room:", selectedSessionId)
+        socket.emit("join-session", selectedSessionId)
+      }
     }
   }, [selectedSessionId])
 
@@ -136,13 +140,23 @@ export default function WhatsAppPage() {
     loadSessions()
   }, [loadSessions])
 
-  const loadMessages = useCallback(async (sessionId: string) => {
+  const loadContacts = useCallback(async (sessionId: string) => {
     try {
-      const response = await apiClient.getMessages(sessionId)
-      setMessages(response.messages || response.data || [])
+      console.log("[v0] Loading contacts for session:", sessionId)
+      const response = await apiClient.getContacts(sessionId, 100)
+      setContacts(response.contacts || response.data || [])
+      console.log("[v0] Contacts loaded:", response.contacts?.length || 0)
+    } catch (error) {
+      console.error("[API ERROR] Failed to load contacts:", error)
+    }
+  }, [])
 
-      const uniqueContacts = extractContactsFromMessages(response.messages || response.data || [])
-      setContacts(uniqueContacts)
+  const loadMessages = useCallback(async (sessionId: string, contactId?: string) => {
+    try {
+      console.log("[v0] Loading messages for session:", sessionId, "contact:", contactId)
+      const response = await apiClient.getMessages(sessionId, contactId)
+      setMessages(response.messages || response.data || [])
+      console.log("[v0] Messages loaded:", response.messages?.length || 0)
     } catch (error) {
       console.error("[API ERROR] Failed to load messages:", error)
     }
@@ -152,14 +166,20 @@ export default function WhatsAppPage() {
     if (selectedSessionId) {
       const session = sessions.find((s) => s.sessionId === selectedSessionId)
       if (session?.isConnected) {
-        loadMessages(selectedSessionId)
+        loadContacts(selectedSessionId)
       } else {
         setMessages([])
         setContacts([])
         setSelectedContact(null)
       }
     }
-  }, [selectedSessionId, sessions, loadMessages])
+  }, [selectedSessionId, sessions, loadContacts])
+
+  useEffect(() => {
+    if (selectedSessionId && selectedContact) {
+      loadMessages(selectedSessionId, selectedContact.whatsapp_id)
+    }
+  }, [selectedContact, selectedSessionId, loadMessages])
 
   const extractContactsFromMessages = (msgs: Message[]): Contact[] => {
     const contactMap = new Map<string, Contact>()

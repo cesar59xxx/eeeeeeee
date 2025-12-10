@@ -147,6 +147,8 @@ app.get("/", (req, res) => {
       sendMessageEndpoint: "/api/messages/send",
       contacts: "/api/contacts",
       sessionStatus: "/api/whatsapp/:sessionId/status",
+      sessionContacts: "/api/whatsapp/sessions/:sessionId/contacts",
+      contactMessages: "/api/whatsapp/:sessionId/messages/:contactId",
     },
   })
 })
@@ -377,15 +379,15 @@ app.post("/api/whatsapp/sessions/:sessionId/start", async (req, res) => {
 
     await whatsappManager.initializeSession(sessionId)
 
-    await supabase.from("whatsapp_sessions").update({ status: "qr" }).eq("session_id", sessionId)
+    await supabase.from("whatsapp_sessions").update({ status: "initializing" }).eq("session_id", sessionId)
 
     res.json({
       success: true,
-      message: "Sessão iniciando - aguarde o QR code",
+      message: "Session initialization started",
     })
   } catch (error) {
-    console.error("Error starting session:", error)
-    res.status(500).json({ error: error.message })
+    console.error("[v0] Error starting session:", error)
+    res.status(500).json({ success: false, error: error.message })
   }
 })
 
@@ -613,7 +615,80 @@ app.post("/api/whatsapp/:sessionId/send", async (req, res) => {
   }
 })
 
-// Adding missing /api/whatsapp/:sessionId/status endpoint
+app.get("/api/whatsapp/sessions/:sessionId/contacts", async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    const limit = req.query.limit ? Number.parseInt(req.query.limit) : 50
+
+    console.log("[v0] GET /api/whatsapp/sessions/:sessionId/contacts:", sessionId, "limit:", limit)
+
+    // Get unique contacts from messages
+    const { data: messages, error } = await supabase
+      .from("messages")
+      .select("from_number, to_number, body, timestamp, direction")
+      .eq("session_id", sessionId)
+      .order("timestamp", { ascending: false })
+
+    if (error) throw error
+
+    // Extract unique contacts
+    const contactMap = new Map()
+
+    messages?.forEach((msg) => {
+      const contactNumber = msg.direction === "incoming" ? msg.from_number : msg.to_number
+
+      if (!contactMap.has(contactNumber)) {
+        contactMap.set(contactNumber, {
+          whatsapp_id: contactNumber,
+          name: contactNumber.replace(/\D/g, ""),
+          phone_number: contactNumber,
+          lastMessage: msg.body,
+          lastMessageTime: msg.timestamp,
+          unreadCount: 0,
+        })
+      }
+    })
+
+    const contacts = Array.from(contactMap.values()).slice(0, limit)
+
+    res.json({
+      success: true,
+      contacts: contacts,
+      data: contacts,
+      total: contacts.length,
+    })
+  } catch (error) {
+    console.error("[v0] Error fetching contacts:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.get("/api/whatsapp/:sessionId/messages/:contactId", async (req, res) => {
+  try {
+    const { sessionId, contactId } = req.params
+    console.log("[v0] GET /api/whatsapp/:sessionId/messages/:contactId:", sessionId, contactId)
+
+    const { data: messages, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("session_id", sessionId)
+      .or(`from_number.eq.${contactId},to_number.eq.${contactId}`)
+      .order("timestamp", { ascending: true })
+
+    if (error) throw error
+
+    res.json({
+      success: true,
+      messages: messages || [],
+      data: messages || [],
+      total: messages?.length || 0,
+    })
+  } catch (error) {
+    console.error("[v0] Error fetching messages for contact:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
 app.get("/api/whatsapp/:sessionId/status", async (req, res) => {
   try {
     const { sessionId } = req.params
@@ -621,20 +696,18 @@ app.get("/api/whatsapp/:sessionId/status", async (req, res) => {
 
     const { data: session, error } = await supabase
       .from("whatsapp_sessions")
-      .select("status, phone_number, last_connected")
+      .select("status, phone_number, is_active")
       .eq("session_id", sessionId)
       .single()
 
     if (error) throw error
 
-    const isConnected = whatsappManager.isSessionActive(sessionId)
-
     res.json({
       success: true,
-      state: isConnected ? "connected" : session.status,
-      isConnected,
+      state: session.status,
+      status: session.status,
       phoneNumber: session.phone_number,
-      lastConnected: session.last_connected,
+      isActive: session.is_active,
     })
   } catch (error) {
     console.error("[v0] Error fetching session status:", error)
