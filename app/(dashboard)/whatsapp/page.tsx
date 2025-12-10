@@ -116,11 +116,16 @@ export default function WhatsAppPage() {
   }, [selectedSessionId])
 
   useEffect(() => {
-    if (selectedSessionId) {
-      const socket = socketClient.getSocket()
-      if (socket) {
-        console.log("[v0] Joining session room:", selectedSessionId)
-        socket.emit("join-session", selectedSessionId)
+    if (!selectedSessionId) return
+
+    const socket = socketClient.getSocket()
+    if (socket) {
+      console.log("[v0] Joining session room:", selectedSessionId)
+      socket.emit("join-session", selectedSessionId)
+
+      return () => {
+        console.log("[v0] Leaving session room:", selectedSessionId)
+        socket.emit("leave-session", selectedSessionId)
       }
     }
   }, [selectedSessionId])
@@ -274,7 +279,7 @@ export default function WhatsAppPage() {
 
       setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000)
     } catch (error: any) {
-      console.error("[API ERROR] Failed to start session:", error.message)
+      console.error("[v0] Failed to start session:", error.message)
       alert(`Erro ao iniciar sessão: ${error.message}`)
     }
   }

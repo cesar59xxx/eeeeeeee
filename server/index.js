@@ -300,75 +300,75 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
     console.log("[v0] Session name:", name)
     console.log("[v0] Session ID:", sessionId)
 
-    const { data: tenants } = await supabase.from("tenants").select("id").limit(1).single()
+    const { data: tenants, error: tenantError } = await supabase.from("tenants").select("id").limit(1).single()
 
-    const tenantId = tenants?.id
-
-    if (!tenantId) {
-      return res.status(500).json({ error: "No tenant found. Please create a tenant first." })
-    }
-
-    const { data: newSession, error } = await supabase
-      .from("whatsapp_sessions")
-      .insert([
-        {
-          session_id: sessionId,
-          name,
-          tenant_id: tenantId, // Adding tenant_id to fix the constraint error
-          status: "disconnected",
-          is_active: true,
-        },
-      ])
-      .select()
-      .single()
-
-    console.log("[v0] INSERT Response:")
-    console.log("[v0] - Error:", JSON.stringify(error, null, 2))
-    console.log("[v0] - Data:", JSON.stringify(newSession, null, 2))
-    console.log("[v0] ============================================================")
-
-    if (error) {
-      console.error("[v0] ❌ Supabase INSERT error:", error)
+    if (tenantError || !tenants?.id) {
+      console.error("[v0] ERROR: No tenant found:", tenantError)
       return res.status(500).json({
-        error: "Erro ao criar sessão no banco de dados: " + error.message,
-        details: error,
+        error: "No tenant found. Please create a tenant first.",
+        details: tenantError?.message,
       })
     }
 
-    if (!newSession) {
-      console.error("[v0] ❌ No session data returned from INSERT")
-      return res.status(500).json({ error: "Sessão criada mas não retornou dados" })
+    const tenantId = tenants.id
+
+    const { data: newSession, error } = await supabase
+      .from("whatsapp_sessions")
+      .upsert(
+        [
+          {
+            session_id: sessionId,
+            name,
+            tenant_id: tenantId,
+            status: "disconnected",
+            is_active: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        {
+          onConflict: "session_id",
+          ignoreDuplicates: false,
+        },
+      )
+      .select()
+      .single()
+
+    if (error) {
+      console.error("[v0] ERROR creating session in Supabase:", error)
+      return res.status(500).json({
+        error: "Failed to create session",
+        details: error.message,
+        hint: error.hint,
+      })
     }
 
-    console.log("[v0] ✅ Session created successfully in Supabase:", newSession.id)
+    console.log("[v0] ✅ Session created successfully:", newSession)
 
-    const transformedSession = {
-      _id: newSession.id,
-      sessionId: newSession.session_id,
-      name: newSession.name,
-      status: newSession.status,
-      isConnected: false,
+    try {
+      await whatsappManager.initializeSession(sessionId)
+      console.log("[v0] ✅ WhatsApp session initialized")
+    } catch (initError) {
+      console.error("[v0] ⚠️ Failed to initialize WhatsApp, but session created:", initError.message)
     }
-
-    setTimeout(async () => {
-      try {
-        console.log(`[v0] Initializing WhatsApp for session ${sessionId}`)
-        await whatsappManager.initializeSession(sessionId)
-        console.log(`[v0] ✅ WhatsApp initialized for session ${sessionId}`)
-      } catch (error) {
-        console.error(`[v0] ❌ Failed to initialize WhatsApp: ${error.message}`)
-        await supabase.from("whatsapp_sessions").update({ status: "error" }).eq("session_id", sessionId)
-      }
-    }, 1000)
 
     res.status(201).json({
       success: true,
-      message: "Sessão criada - iniciando conexão...",
-      session: transformedSession,
+      session: {
+        sessionId: newSession.session_id,
+        name: newSession.name,
+        status: newSession.status,
+        isConnected: false,
+        createdAt: newSession.created_at,
+      },
     })
   } catch (error) {
-    console.error("[v0] ❌ Unexpected error creating session:", error)
-    res.status(500).json({ error: error.message, stack: error.stack })
+    console.error("[v0] ❌ CRITICAL ERROR in POST /api/whatsapp/sessions:", error)
+    res.status(500).json({
+      error: "Internal server error",
+      message: error.message,
+      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+    })
   }
 })
 
@@ -510,7 +510,7 @@ app.post("/api/whatsapp/:sessionId/messages", async (req, res) => {
 
     const messageData = {
       id: Date.now().toString(),
-      session_id: sessionId,
+      session_id: sessionId, // This field now exists in the table
       from_number: sessionId,
       to_number: to,
       body: body,
@@ -519,7 +519,11 @@ app.post("/api/whatsapp/:sessionId/messages", async (req, res) => {
       status: "sent",
     }
 
-    await supabase.from("messages").insert([messageData])
+    const { error: insertError } = await supabase.from("messages").insert([messageData])
+
+    if (insertError) {
+      console.error("[v0] ERROR saving message:", insertError)
+    }
 
     if (global.io) {
       global.io.to(sessionId).emit("whatsapp:message", messageData)
@@ -528,11 +532,15 @@ app.post("/api/whatsapp/:sessionId/messages", async (req, res) => {
     res.json({
       success: true,
       message: "Message sent successfully",
-      messageId: sentMessage?.id?._serialized,
+      data: sentMessage,
     })
   } catch (error) {
-    console.error("[v0] Error sending message:", error)
-    res.status(500).json({ success: false, error: error.message })
+    console.error("[v0] ERROR sending message:", error)
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: "Failed to send WhatsApp message",
+    })
   }
 })
 
@@ -611,7 +619,11 @@ app.post("/api/whatsapp/:sessionId/send", async (req, res) => {
     })
   } catch (error) {
     console.error("[v0] Error sending message:", error)
-    res.status(500).json({ success: false, error: error.message })
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: "Failed to send WhatsApp message",
+    })
   }
 })
 
@@ -852,13 +864,13 @@ io.on("connection", (socket) => {
   console.log(`[v0] 🔌 Client connected: ${socket.id}`)
 
   socket.on("join-session", (sessionId) => {
-    console.log(`[v0] Client ${socket.id} joining session: ${sessionId}`)
+    console.log(`[v0] Client ${socket.id} joining session room: ${sessionId}`)
     socket.join(sessionId)
     socket.emit("joined-session", { sessionId })
   })
 
   socket.on("leave-session", (sessionId) => {
-    console.log(`[v0] Client ${socket.id} leaving session: ${sessionId}`)
+    console.log(`[v0] Client ${socket.id} leaving session room: ${sessionId}`)
     socket.leave(sessionId)
   })
 

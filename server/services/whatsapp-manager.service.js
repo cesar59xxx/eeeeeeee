@@ -212,12 +212,13 @@ class WhatsAppManager {
           console.log(`[${sessionId}] 📨 Message received from ${msg.from}`)
 
           const messageData = {
-            sessionId,
-            from: msg.from,
-            to: msg.to || sessionId,
+            session_id: sessionId, // Include session_id
+            from_number: msg.from,
+            to_number: msg.to || sessionId,
             body: msg.body,
-            timestamp: msg.timestamp,
+            timestamp: new Date(msg.timestamp * 1000).toISOString(),
             direction: msg.fromMe ? "outgoing" : "incoming",
+            status: "delivered",
           }
 
           // Save to database
@@ -515,12 +516,12 @@ class WhatsAppManager {
         .insert([
           {
             session_id: sessionId,
-            from_number: messageData.from,
-            to_number: messageData.to,
+            from_number: messageData.from_number,
+            to_number: messageData.to_number,
             body: messageData.body,
-            timestamp: new Date(messageData.timestamp * 1000).toISOString(),
+            timestamp: messageData.timestamp,
             direction: messageData.direction,
-            status: "delivered",
+            status: messageData.status,
           },
         ])
         .select()
