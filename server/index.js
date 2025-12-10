@@ -9,6 +9,7 @@ import dotenv from "dotenv"
 import QRCode from "qrcode"
 import { whatsappManager } from "./services/whatsapp-manager.service.js"
 import { supabase } from "./config/supabase.js"
+import crypto from "crypto"
 
 dotenv.config()
 
@@ -229,146 +230,107 @@ app.get("/api/contacts", async (req, res) => {
   }
 })
 
+const sessionRequestCache = new Map()
+
 app.get("/api/whatsapp/sessions", async (req, res) => {
   try {
-    console.log("[v0] ========================================")
-    console.log("[v0] GET /api/whatsapp/sessions - fetching real sessions")
+    const cacheKey = "sessions_list"
+    const now = Date.now()
+
+    // Check cache - 1 second cooldown
+    if (sessionRequestCache.has(cacheKey)) {
+      const lastRequest = sessionRequestCache.get(cacheKey)
+      if (now - lastRequest < 1000) {
+        return res.status(429).json({
+          success: false,
+          error: "Too many requests. Please wait.",
+        })
+      }
+    }
+
+    sessionRequestCache.set(cacheKey, now)
 
     const { data: sessions, error } = await supabase
       .from("whatsapp_sessions")
       .select("*")
       .order("created_at", { ascending: false })
 
-    if (error) {
-      console.error("[v0] Supabase error:", error)
-      throw error
-    }
-
-    const transformedSessions = await Promise.all(
-      sessions?.map(async (session) => {
-        let qrCodeDataUrl = null
-
-        // Only convert QR if status is 'qr' and not connected
-        if (session.qr_code && session.status === "qr") {
-          try {
-            qrCodeDataUrl = await QRCode.toDataURL(session.qr_code, {
-              margin: 1,
-              scale: 5,
-              errorCorrectionLevel: "M",
-              width: 300,
-            })
-          } catch (error) {
-            console.error("[v0] Error converting QR to data URL:", error)
-          }
-        }
-
-        return {
-          _id: session.id,
-          sessionId: session.session_id,
-          name: session.name,
-          phoneNumber: session.phone_number,
-          status: session.status === "ready" || session.status === "connected" ? "connected" : session.status,
-          qrCode: session.status === "connected" ? null : qrCodeDataUrl,
-          lastConnected: session.last_connected,
-          isConnected: session.status === "ready" || session.status === "connected",
-        }
-      }) || [],
-    )
+    if (error) throw error
 
     res.json({
       success: true,
-      data: transformedSessions,
-      total: transformedSessions.length,
+      sessions: sessions || [],
+      data: sessions || [],
+      total: sessions?.length || 0,
     })
   } catch (error) {
-    console.error("[v0] ❌ Error fetching sessions:", error)
+    console.error("[v0] Error fetching sessions:", error)
     res.status(500).json({ success: false, error: error.message })
   }
 })
 
 app.post("/api/whatsapp/sessions", async (req, res) => {
   try {
-    const { name } = req.body
+    const { name, tenantId } = req.body
 
     if (!name) {
-      return res.status(400).json({ error: "Nome da sessão é obrigatório" })
+      return res.status(400).json({ success: false, error: "Name is required" })
     }
 
     const sessionId = `session-${Date.now()}`
 
-    console.log("[v0] ==================== CREATING SESSION ====================")
-    console.log("[v0] Session name:", name)
-    console.log("[v0] Session ID:", sessionId)
+    // Check if session with this name already exists
+    const { data: existing } = await supabase
+      .from("whatsapp_sessions")
+      .select("id, session_id, status, phone_number")
+      .eq("name", name)
+      .eq("tenant_id", tenantId || "default")
+      .single()
 
-    const { data: tenants, error: tenantError } = await supabase.from("tenants").select("id").limit(1).single()
-
-    if (tenantError || !tenants?.id) {
-      console.error("[v0] ERROR: No tenant found:", tenantError)
-      return res.status(500).json({
-        error: "No tenant found. Please create a tenant first.",
-        details: tenantError?.message,
+    if (existing) {
+      return res.json({
+        success: true,
+        session: {
+          id: existing.id,
+          sessionId: existing.session_id,
+          name: name,
+          status: existing.status,
+          phone: existing.phone_number,
+        },
+        message: "Session already exists",
       })
     }
 
-    const tenantId = tenants.id
-
+    // Create new session
     const { data: newSession, error } = await supabase
       .from("whatsapp_sessions")
-      .upsert(
-        [
-          {
-            session_id: sessionId,
-            name,
-            tenant_id: tenantId,
-            status: "disconnected",
-            is_active: true,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-        ],
+      .insert([
         {
-          onConflict: "session_id",
-          ignoreDuplicates: false,
+          session_id: sessionId,
+          name: name,
+          tenant_id: tenantId || "default",
+          status: "pending",
+          created_at: new Date().toISOString(),
         },
-      )
+      ])
       .select()
       .single()
 
-    if (error) {
-      console.error("[v0] ERROR creating session in Supabase:", error)
-      return res.status(500).json({
-        error: "Failed to create session",
-        details: error.message,
-        hint: error.hint,
-      })
-    }
+    if (error) throw error
 
-    console.log("[v0] ✅ Session created successfully:", newSession)
-
-    try {
-      await whatsappManager.initializeSession(sessionId)
-      console.log("[v0] ✅ WhatsApp session initialized")
-    } catch (initError) {
-      console.error("[v0] ⚠️ Failed to initialize WhatsApp, but session created:", initError.message)
-    }
-
-    res.status(201).json({
+    res.json({
       success: true,
       session: {
+        id: newSession.id,
         sessionId: newSession.session_id,
         name: newSession.name,
         status: newSession.status,
-        isConnected: false,
-        createdAt: newSession.created_at,
+        phone: newSession.phone_number,
       },
     })
   } catch (error) {
-    console.error("[v0] ❌ CRITICAL ERROR in POST /api/whatsapp/sessions:", error)
-    res.status(500).json({
-      error: "Internal server error",
-      message: error.message,
-      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
-    })
+    console.error("[v0] Error creating session:", error)
+    res.status(500).json({ success: false, error: error.message })
   }
 })
 
@@ -470,10 +432,25 @@ app.get("/api/whatsapp/:sessionId/messages", async (req, res) => {
     const { sessionId } = req.params
     console.log("[v0] GET /api/whatsapp/:sessionId/messages:", sessionId)
 
+    // Get session UUID from session_id
+    const { data: session } = await supabase.from("whatsapp_sessions").select("id").eq("session_id", sessionId).single()
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" })
+    }
+
     const { data: messages, error } = await supabase
       .from("messages")
-      .select("*")
-      .eq("session_id", sessionId)
+      .select(`
+        *,
+        contacts (
+          id,
+          name,
+          phone,
+          avatar_url
+        )
+      `)
+      .eq("whatsapp_session_id", session.id)
       .order("timestamp", { ascending: true })
 
     if (error) throw error
@@ -501,6 +478,43 @@ app.post("/api/whatsapp/:sessionId/messages", async (req, res) => {
       return res.status(400).json({ success: false, error: "to and body are required" })
     }
 
+    // Get session info
+    const { data: session } = await supabase
+      .from("whatsapp_sessions")
+      .select("id, tenant_id")
+      .eq("session_id", sessionId)
+      .single()
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" })
+    }
+
+    // Get or create contact
+    const phoneNumber = to.split("@")[0]
+    let { data: contact } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("phone", phoneNumber)
+      .eq("tenant_id", session.tenant_id)
+      .single()
+
+    if (!contact) {
+      const { data: newContact } = await supabase
+        .from("contacts")
+        .insert([
+          {
+            id: crypto.randomUUID(),
+            tenant_id: session.tenant_id,
+            name: phoneNumber,
+            phone: phoneNumber,
+            created_at: new Date().toISOString(),
+          },
+        ])
+        .select()
+        .single()
+      contact = newContact
+    }
+
     const content = {
       type: "text",
       text: body,
@@ -509,14 +523,15 @@ app.post("/api/whatsapp/:sessionId/messages", async (req, res) => {
     const sentMessage = await whatsappManager.sendMessage(sessionId, to, content)
 
     const messageData = {
-      id: Date.now().toString(),
-      session_id: sessionId, // This field now exists in the table
-      from_number: sessionId,
-      to_number: to,
+      id: crypto.randomUUID(),
+      tenant_id: session.tenant_id,
+      whatsapp_session_id: session.id,
+      contact_id: contact.id,
+      from_me: true,
       body: body,
       timestamp: new Date().toISOString(),
-      direction: "outgoing",
       status: "sent",
+      created_at: new Date().toISOString(),
     }
 
     const { error: insertError } = await supabase.from("messages").insert([messageData])
@@ -570,10 +585,16 @@ app.get("/api/messages/:sessionId", async (req, res) => {
     const { sessionId } = req.params
     console.log("[v0] GET /api/messages/:sessionId:", sessionId)
 
+    const { data: session } = await supabase.from("whatsapp_sessions").select("id").eq("session_id", sessionId).single()
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" })
+    }
+
     const { data: messages, error } = await supabase
       .from("messages")
       .select("*")
-      .eq("session_id", sessionId)
+      .eq("whatsapp_session_id", session.id)
       .order("timestamp", { ascending: true })
 
     if (error) {
@@ -589,41 +610,6 @@ app.get("/api/messages/:sessionId", async (req, res) => {
   } catch (error) {
     console.error("[v0] Error in messages endpoint:", error)
     res.status(500).json({ success: false, error: error.message })
-  }
-})
-
-app.post("/api/whatsapp/:sessionId/send", async (req, res) => {
-  try {
-    const { sessionId } = req.params
-    const { to, message, type = "text" } = req.body
-
-    console.log("[v0] POST /api/whatsapp/:sessionId/send:", { sessionId, to, message })
-
-    if (!to || !message) {
-      return res.status(400).json({ success: false, error: "to and message are required" })
-    }
-
-    const content = {
-      type,
-      text: message,
-    }
-
-    const sentMessage = await whatsappManager.sendMessage(sessionId, to, content)
-
-    res.json({
-      success: true,
-      data: {
-        messageId: sentMessage?.id?._serialized,
-        timestamp: Date.now(),
-      },
-    })
-  } catch (error) {
-    console.error("[v0] Error sending message:", error)
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      details: "Failed to send WhatsApp message",
-    })
   }
 })
 
@@ -799,7 +785,7 @@ app.post("/api/messages/send", async (req, res) => {
     console.log("[v0] POST /api/messages/send:", { sessionId, to, message })
 
     if (!sessionId || !to || !message) {
-      return res.status(400).json({ error: "sessionId, to and message are required" })
+      return res.status(400).json({ success: false, error: "sessionId, to and message are required" })
     }
 
     const content = {

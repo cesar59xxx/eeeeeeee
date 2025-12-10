@@ -275,7 +275,7 @@ export default function WhatsAppPage() {
         } catch (error: any) {
           console.error("[API ERROR] QR polling failed:", error.message)
         }
-      }, 2000)
+      }, 3000) // Increased to 3 seconds
 
       setTimeout(() => clearInterval(pollInterval), 5 * 60 * 1000)
     } catch (error: any) {

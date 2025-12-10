@@ -2,6 +2,7 @@ import pkg from "whatsapp-web.js"
 const { Client, LocalAuth } = pkg
 import { supabase } from "../config/supabase.js"
 import fs from "fs"
+import crypto from "crypto"
 
 /**
  * WhatsAppManager - Gerenciador de múltiplas sessões WhatsApp
@@ -211,22 +212,69 @@ class WhatsAppManager {
         try {
           console.log(`[${sessionId}] 📨 Message received from ${msg.from}`)
 
+          const { data: session } = await supabase
+            .from("whatsapp_sessions")
+            .select("id, tenant_id")
+            .eq("session_id", sessionId)
+            .single()
+
+          if (!session) {
+            console.error(`[${sessionId}] Session not found in database`)
+            return
+          }
+
+          // Get or create contact
+          const contact = await this.getOrCreateContact(msg, session.tenant_id)
+
+          // Prepare message data with correct column names
           const messageData = {
-            session_id: sessionId, // Include session_id
-            from_number: msg.from,
-            to_number: msg.to || sessionId,
-            body: msg.body,
+            id: crypto.randomUUID(),
+            tenant_id: session.tenant_id,
+            whatsapp_session_id: session.id, // Correct column name
+            contact_id: contact.id,
+            from_me: msg.fromMe,
+            body: msg.body || "",
+            media_url: null,
+            media_type: null,
             timestamp: new Date(msg.timestamp * 1000).toISOString(),
-            direction: msg.fromMe ? "outgoing" : "incoming",
-            status: "delivered",
+            status: "received",
+            created_at: new Date().toISOString(),
+          }
+
+          // Handle media if present
+          if (msg.hasMedia) {
+            try {
+              const media = await msg.downloadMedia()
+              messageData.media_url = `data:${media.mimetype};base64,${media.data}`
+              messageData.media_type = media.mimetype
+            } catch (error) {
+              console.error(`[${sessionId}] Error downloading media:`, error)
+            }
           }
 
           // Save to database
-          const savedMessage = await this.saveMessage(sessionId, messageData)
+          const { data: savedMessage, error: insertError } = await supabase
+            .from("messages")
+            .insert([messageData])
+            .select()
+            .single()
 
+          if (insertError) {
+            console.error(`[${sessionId}] Error saving message:`, insertError)
+            return
+          }
+
+          console.log(`[${sessionId}] ✅ Message saved to database`)
+
+          // Emit via Socket.IO
           if (global.io) {
-            global.io.to(sessionId).emit("message", savedMessage)
-            global.io.emit("whatsapp:message", savedMessage)
+            global.io.to(sessionId).emit("whatsapp:message", {
+              sessionId,
+              message: savedMessage,
+              contact,
+            })
+            // Also emit globally for backward compatibility
+            global.io.emit("message", savedMessage)
           }
         } catch (error) {
           console.error(`[${sessionId}] Error handling message:`, error)
@@ -271,115 +319,58 @@ class WhatsAppManager {
   async handleIncomingMessage(msg, sessionId) {
     console.log(`[${sessionId}] Mensagem recebida de ${msg.from}`)
 
-    // Obter ou criar contato
-    const contact = await this.getOrCreateContact(msg, sessionId)
+    const { data: session } = await supabase
+      .from("whatsapp_sessions")
+      .select("id, tenant_id")
+      .eq("session_id", sessionId)
+      .single()
 
-    // Determinar tipo da mensagem
-    let messageType = "text"
-    let content = { text: msg.body }
-
-    if (msg.hasMedia) {
-      const media = await msg.downloadMedia()
-      messageType = media.mimetype.startsWith("image")
-        ? "image"
-        : media.mimetype.startsWith("video")
-          ? "video"
-          : media.mimetype.startsWith("audio")
-            ? "audio"
-            : "document"
-
-      content = {
-        text: msg.body,
-        mediaUrl: `data:${media.mimetype};base64,${media.data}`,
-        mimeType: media.mimetype,
-        caption: msg.caption || msg.body,
-        filename: media.filename,
-      }
+    if (!session) {
+      console.error(`[${sessionId}] Session not found`)
+      return
     }
 
-    // Criar mensagem no banco
-    const { data, error } = await supabase.from("messages").insert([
-      {
-        session_id: sessionId,
-        contact_id: contact.id,
-        whatsapp_message_id: msg.id._serialized,
-        direction: "inbound",
-        type: messageType,
-        content: JSON.stringify(content),
-        status: "delivered",
-        timestamp: new Date(msg.timestamp * 1000).toISOString(),
-      },
-    ])
-
-    if (error) {
-      console.error(`[${sessionId}] Erro ao criar mensagem no banco:`, error)
-      throw error
-    }
-
-    // Atualizar última interação do contato
-    await supabase
-      .from("contacts")
-      .update({
-        last_interaction: new Date().toISOString(),
-        total_messages: contact.total_messages + 1,
-      })
-      .eq("id", contact.id)
-
-    // Emitir mensagem via Socket.IO
-    if (global.io) {
-      global.io.emit("message:new", {
-        message: data[0],
-        contact: contact,
-      })
-    }
-
-    // Adicionar à fila para processamento de chatbot
-    // await messageQueue.add("process-message", {
-    //   messageId: message._id,
-    //   tenantId,
-    //   contactId: contact._id,
-    //   sessionId,
-    // })
+    await this.handleMessage(msg, session)
   }
 
   /**
    * Obter ou criar contato
    */
-  async getOrCreateContact(msg, sessionId) {
+  async getOrCreateContact(msg, tenantId) {
     const whatsappId = msg.from
     const phoneNumber = whatsappId.split("@")[0]
 
     let { data: contactData, error: contactError } = await supabase
       .from("contacts")
       .select("*")
-      .eq("whatsapp_id", whatsappId)
+      .eq("phone", phoneNumber)
+      .eq("tenant_id", tenantId)
       .single()
 
     if (contactError || !contactData) {
-      // Buscar informações do contato
-      const client = this.clients.get(sessionId)
-      const whatsappContact = await client.getContactById(whatsappId)
-
       const { data: newContactData, error: newContactError } = await supabase
         .from("contacts")
         .insert([
           {
-            whatsapp_id: whatsappId,
-            name: whatsappContact.pushname || whatsappContact.name || phoneNumber,
-            phone_number: phoneNumber,
-            avatar: await whatsappContact.getProfilePicUrl().catch(() => null),
-            tenant_id: msg.from.split("@")[1], // Assuming tenant_id is part of the whatsappId
+            id: crypto.randomUUID(),
+            tenant_id: tenantId,
+            name: phoneNumber, // Will be updated when we get pushname
+            phone: phoneNumber,
+            avatar_url: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
           },
         ])
         .select()
+        .single()
 
       if (newContactError) {
-        console.error(`[${sessionId}] Erro ao criar novo contato:`, newContactError)
+        console.error(`Error creating contact:`, newContactError)
         throw newContactError
       }
 
-      contactData = newContactData[0]
-      console.log(`[${sessionId}] Novo contato criado: ${contactData.name}`)
+      contactData = newContactData
+      console.log(`New contact created: ${contactData.name}`)
     }
 
     return contactData
@@ -511,17 +502,29 @@ class WhatsAppManager {
    */
   async saveMessage(sessionId, messageData) {
     try {
+      const { data: session } = await supabase
+        .from("whatsapp_sessions")
+        .select("id, tenant_id")
+        .eq("session_id", sessionId)
+        .single()
+
+      if (!session) {
+        throw new Error(`Session ${sessionId} not found`)
+      }
+
       const { data, error } = await supabase
         .from("messages")
         .insert([
           {
-            session_id: sessionId,
-            from_number: messageData.from_number,
-            to_number: messageData.to_number,
+            id: crypto.randomUUID(),
+            tenant_id: session.tenant_id,
+            whatsapp_session_id: session.id,
+            contact_id: null, // Will be set by caller
+            from_me: messageData.direction === "outgoing",
             body: messageData.body,
             timestamp: messageData.timestamp,
-            direction: messageData.direction,
             status: messageData.status,
+            created_at: new Date().toISOString(),
           },
         ])
         .select()
@@ -537,6 +540,71 @@ class WhatsAppManager {
     } catch (error) {
       console.error(`[${sessionId}] Failed to save message:`, error)
       throw error
+    }
+  }
+
+  /**
+   * Processar mensagem recebida
+   */
+  async handleMessage(msg, session) {
+    try {
+      console.log(`[${session.tenant_id}] 📨 Message received from ${msg.from}`)
+
+      // Get or create contact
+      const contact = await this.getOrCreateContact(msg, session.tenant_id)
+
+      // Prepare message data with correct column names
+      const messageData = {
+        id: crypto.randomUUID(),
+        tenant_id: session.tenant_id,
+        whatsapp_session_id: session.id, // Correct column name
+        contact_id: contact.id,
+        from_me: msg.fromMe,
+        body: msg.body || "",
+        media_url: null,
+        media_type: null,
+        timestamp: new Date(msg.timestamp * 1000).toISOString(),
+        status: "received",
+        created_at: new Date().toISOString(),
+      }
+
+      // Handle media if present
+      if (msg.hasMedia) {
+        try {
+          const media = await msg.downloadMedia()
+          messageData.media_url = `data:${media.mimetype};base64,${media.data}`
+          messageData.media_type = media.mimetype
+        } catch (error) {
+          console.error(`[${session.tenant_id}] Error downloading media:`, error)
+        }
+      }
+
+      // Save to database
+      const { data: savedMessage, error: insertError } = await supabase
+        .from("messages")
+        .insert([messageData])
+        .select()
+        .single()
+
+      if (insertError) {
+        console.error(`[${session.tenant_id}] Error saving message:`, insertError)
+        return
+      }
+
+      console.log(`[${session.tenant_id}] ✅ Message saved to database`)
+
+      // Emit via Socket.IO
+      if (global.io) {
+        global.io.to(session.id).emit("whatsapp:message", {
+          sessionId: session.id,
+          message: savedMessage,
+          contact,
+        })
+        // Also emit globally for backward compatibility
+        global.io.emit("message", savedMessage)
+      }
+    } catch (error) {
+      console.error(`[${session.tenant_id}] Error handling message:`, error)
     }
   }
 }
