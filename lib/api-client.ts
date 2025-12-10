@@ -203,13 +203,13 @@ class SocketClient {
 
   connect(token?: string) {
     if (this.socket?.connected) {
-      console.log("[SOCKET] Already connected")
+      console.log("[v0] SOCKET: Already connected")
       return this.socket
     }
 
     const socketURL = config.api.wsURL
 
-    console.log("[SOCKET] Connecting to:", socketURL)
+    console.log("[v0] SOCKET: Connecting to:", socketURL)
 
     this.socket = io(socketURL, {
       auth: token ? { token } : undefined,
@@ -217,18 +217,20 @@ class SocketClient {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionAttempts: 5,
+      withCredentials: true,
     })
 
     this.socket.on("connect", () => {
-      console.log("[SOCKET] ✅ Connected successfully")
+      console.log("[v0] SOCKET: ✅ Connected successfully to", socketURL)
     })
 
-    this.socket.on("disconnect", () => {
-      console.log("[SOCKET] Disconnected")
+    this.socket.on("disconnect", (reason) => {
+      console.log("[v0] SOCKET: Disconnected -", reason)
     })
 
     this.socket.on("connect_error", (error) => {
-      console.error("[SOCKET ERROR]", error.message)
+      console.error("[v0] SOCKET ERROR:", error.message)
+      console.error("[v0] SOCKET ERROR: Failed to connect to", socketURL)
     })
 
     return this.socket
@@ -236,6 +238,7 @@ class SocketClient {
 
   disconnect() {
     if (this.socket) {
+      console.log("[v0] SOCKET: Disconnecting...")
       this.socket.disconnect()
       this.socket = null
     }

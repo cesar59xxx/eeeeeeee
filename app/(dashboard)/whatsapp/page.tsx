@@ -1,19 +1,15 @@
 "use client"
 
 import { Separator } from "@/components/ui/separator"
-
 import { ScrollArea } from "@/components/ui/scroll-area"
-
 import { useEffect, useState, useCallback } from "react"
-import { io, type Socket } from "socket.io-client"
+import { socketClient, apiClient } from "@/lib/api-client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Plus, Power, Trash2, Send, MessageCircle, User } from "lucide-react"
-import { apiClient } from "@/lib/api-client"
-import { config } from "@/lib/config"
 
 interface Session {
   _id: string
@@ -57,36 +53,19 @@ export default function WhatsAppPage() {
   const [qrCodeData, setQrCodeData] = useState<{ sessionId: string; qrCode: string | null; status: string } | null>(
     null,
   )
-  const [socket, setSocket] = useState<Socket | null>(null)
 
   useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://eeeeeeee-production.up.railway.app"
-    const wsUrl = config.api.wsURL
+    console.log("[v0] WhatsApp page: Initializing socket connection...")
 
-    console.log("[SOCKET] Initializing connection to:", wsUrl)
-
-    const socketConnection = io(wsUrl, {
-      transports: ["websocket", "polling"],
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
-    })
-
-    socketConnection.on("connect", () => {
-      console.log("[SOCKET] ✅ Connected successfully")
-    })
-
-    socketConnection.on("connect_error", (error) => {
-      console.error("[SOCKET ERROR] Failed to connect -", error.message)
-    })
+    const socketConnection = socketClient.connect()
 
     socketConnection.on("whatsapp:qr", ({ sessionId, qr }) => {
-      console.log("[SOCKET] Received QR for session:", sessionId)
+      console.log("[v0] Received QR for session:", sessionId)
       setQrCodeData((prev) => (prev?.sessionId === sessionId ? { ...prev, qrCode: qr } : prev))
     })
 
     socketConnection.on("whatsapp:status", ({ sessionId, status }) => {
-      console.log("[SOCKET] Status update:", sessionId, status)
+      console.log("[v0] Status update:", sessionId, status)
 
       setSessions((prev) =>
         prev.map((s) =>
@@ -108,7 +87,7 @@ export default function WhatsAppPage() {
     })
 
     socketConnection.on("whatsapp:message", (messageData) => {
-      console.log("[SOCKET] New message received:", messageData)
+      console.log("[v0] New message received:", messageData)
 
       const newMsg: Message = {
         id: messageData.id || Date.now().toString(),
@@ -131,18 +110,16 @@ export default function WhatsAppPage() {
       updateContactsList(newMsg)
     })
 
-    setSocket(socketConnection)
-
     return () => {
-      socketConnection.disconnect()
+      socketClient.disconnect()
     }
   }, [])
 
   useEffect(() => {
-    if (socket && selectedSessionId) {
-      socket.emit("join-session", selectedSessionId)
+    if (selectedSessionId) {
+      socketClient.emit("join-session", selectedSessionId)
     }
-  }, [socket, selectedSessionId])
+  }, [selectedSessionId])
 
   const loadSessions = useCallback(async () => {
     try {
