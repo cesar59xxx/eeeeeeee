@@ -146,7 +146,7 @@ app.get("/", (req, res) => {
       fetchMessages: "/api/messages/:sessionId",
       sendMessageEndpoint: "/api/messages/send",
       contacts: "/api/contacts",
-      sessionStatus: "/api/whatsapp/:sessionId/status",
+      sessionStatus: "/api/whatsapp/sessions/:sessionId/status",
       sessionContacts: "/api/whatsapp/sessions/:sessionId/contacts",
       contactMessages: "/api/whatsapp/:sessionId/messages/:contactId",
     },
@@ -689,29 +689,73 @@ app.get("/api/whatsapp/:sessionId/messages/:contactId", async (req, res) => {
   }
 })
 
-app.get("/api/whatsapp/:sessionId/status", async (req, res) => {
+app.get("/api/whatsapp/sessions/:sessionId/status", async (req, res) => {
   try {
     const { sessionId } = req.params
-    console.log("[v0] GET /api/whatsapp/:sessionId/status:", sessionId)
+    console.log("[v0] GET /api/whatsapp/sessions/:sessionId/status:", sessionId)
 
+    // Check if session is active in WhatsApp Manager
+    const isActive = whatsappManager.isSessionActive(sessionId)
+    const client = whatsappManager.getClient(sessionId)
+
+    // Get session from database
     const { data: session, error } = await supabase
       .from("whatsapp_sessions")
-      .select("status, phone_number, is_active")
+      .select("status, phone_number, is_active, qr_code")
       .eq("session_id", sessionId)
       .single()
 
-    if (error) throw error
+    if (error) {
+      console.error("[v0] Session not found in database:", error)
+      return res.status(404).json({
+        ok: false,
+        error: "Session not found",
+      })
+    }
 
-    res.json({
-      success: true,
-      state: session.status,
-      status: session.status,
-      phoneNumber: session.phone_number,
-      isActive: session.is_active,
-    })
+    // Determine real-time status
+    let status = session.status
+    const qr = session.qr_code
+    let phoneNumber = session.phone_number
+
+    // If client is active, get real status from WhatsApp
+    if (isActive && client) {
+      const state = await client.getState().catch(() => null)
+
+      if (state === "CONNECTED") {
+        status = "connected"
+        if (client.info) {
+          phoneNumber = client.info.wid.user
+        }
+      } else if (state === "OPENING" || state === "PAIRING") {
+        status = "qr"
+      } else if (state === "UNPAIRED" || state === "UNPAIRED_IDLE") {
+        status = "pending"
+      }
+    }
+
+    // Response in the exact format requested
+    const response = {
+      ok: true,
+      sessionId,
+      status,
+    }
+
+    // Add optional fields
+    if (qr && status === "qr") {
+      response.qr = qr
+    }
+
+    if (phoneNumber && status === "connected") {
+      response.phoneNumber = phoneNumber
+    }
+
+    console.log("[v0] Status response:", { sessionId, status, hasQR: !!qr, phoneNumber })
+
+    res.json(response)
   } catch (error) {
     console.error("[v0] Error fetching session status:", error)
-    res.status(500).json({ success: false, error: error.message })
+    res.status(500).json({ ok: false, error: error.message })
   }
 })
 
