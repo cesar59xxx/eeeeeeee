@@ -273,18 +273,60 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
   try {
     const { name, tenantId } = req.body
 
+    if (req.body.id) {
+      console.error("[v0] ERROR: Client sent 'id' in request body, this should never happen")
+      return res.status(400).json({
+        success: false,
+        error: "Invalid request: 'id' should not be sent",
+      })
+    }
+
     if (!name) {
       return res.status(400).json({ success: false, error: "Name is required" })
     }
 
     const sessionId = `session-${Date.now()}`
 
+    let finalTenantId = tenantId
+
+    if (!finalTenantId) {
+      // Get or create a default tenant
+      const { data: defaultTenant, error: tenantError } = await supabase
+        .from("tenants")
+        .select("id")
+        .eq("name", "default")
+        .single()
+
+      if (defaultTenant) {
+        finalTenantId = defaultTenant.id
+      } else {
+        // Create default tenant if it doesn't exist
+        const { data: newTenant, error: createError } = await supabase
+          .from("tenants")
+          .insert({ name: "default" })
+          .select("id")
+          .single()
+
+        if (createError) {
+          console.error("[v0] Error creating default tenant:", createError)
+          return res.status(500).json({
+            success: false,
+            error: "Failed to create default tenant",
+          })
+        }
+
+        finalTenantId = newTenant.id
+      }
+    }
+
+    console.log("[v0] Creating session:", { name, tenantId: finalTenantId, sessionId })
+
     // Check if session with this name already exists
     const { data: existing } = await supabase
       .from("whatsapp_sessions")
       .select("id, session_id, status, phone_number")
       .eq("name", name)
-      .eq("tenant_id", tenantId || "default")
+      .eq("tenant_id", finalTenantId)
       .single()
 
     if (existing) {
@@ -301,14 +343,13 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       })
     }
 
-    // Create new session
-    const { data: newSession, error } = await supabase
+    const { data: newSession, error: insertError } = await supabase
       .from("whatsapp_sessions")
       .insert([
         {
           session_id: sessionId,
           name: name,
-          tenant_id: tenantId || "default",
+          tenant_id: finalTenantId,
           status: "pending",
           created_at: new Date().toISOString(),
         },
@@ -316,7 +357,12 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       .select()
       .single()
 
-    if (error) throw error
+    if (insertError) {
+      console.error("[v0] Supabase insert error:", insertError)
+      throw insertError
+    }
+
+    console.log("[v0] Session created successfully:", newSession.id)
 
     res.json({
       success: true,
