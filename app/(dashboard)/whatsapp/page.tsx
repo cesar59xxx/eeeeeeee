@@ -53,27 +53,60 @@ export default function WhatsAppPage() {
   const [error, setError] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
 
-  const handleStartSession = async (sessionId: string) => {
-    if (!sessionId || sessionId === "undefined") {
-      console.error("[v0] ERROR: Cannot start session with invalid ID:", sessionId)
-      alert("Erro: ID da sessão inválido")
-      return
-    }
-
+  const loadSessions = useCallback(async () => {
     try {
-      console.log("[v0] Starting session:", sessionId)
+      console.log("[v0] Loading WhatsApp sessions...")
+      const response = await apiClient.getSessions()
+      console.log("[v0] Raw sessions response:", response)
 
-      await apiClient.startSession(sessionId)
+      if (!response) {
+        console.error("[v0] ERROR: Empty response from /api/whatsapp/sessions")
+        return
+      }
 
-      setQrDialogOpen(true)
-      startQRPolling(sessionId)
+      const rawSessions = response.sessions || response.data || response.results || []
 
-      console.log("[v0] ✅ Session start initiated")
-    } catch (error: any) {
-      console.error("[v0] ERROR starting session:", error)
-      alert(error.message || "Erro ao iniciar sessão")
+      const normalizedSessions: Session[] = (rawSessions as any[])
+        .map((s) => {
+          // Try multiple possible ID fields
+          const id = s.id || s.sessionId || s.session || s.instanceId || s.instance || null
+
+          // Try multiple possible name fields
+          const name = s.name || s.sessionName || s.phone_number || s.phone || s.session || id || "Unnamed"
+
+          const status = s.status || s.connectionStatus || s.state || "disconnected"
+
+          const phone = s.phone || s.phone_number || s.number || undefined
+
+          const isConnected =
+            status === "connected" || status === "ready" || status === "WORKING" || status === "CONNECTED"
+
+          const qrCode = s.qr || s.qrCode || s.qr_code || undefined
+
+          if (!id) {
+            console.error("[v0] WARNING: Session without valid ID:", s)
+            return null
+          }
+
+          return {
+            id: String(id),
+            name: String(name),
+            status: String(status),
+            phone,
+            isConnected,
+            qrCode,
+          }
+        })
+        .filter((s): s is Session => s !== null)
+
+      console.log("[v0] Normalized sessions:", normalizedSessions)
+      setSessions(normalizedSessions)
+    } catch (error) {
+      console.error("[v0] Failed to load sessions:", error)
+    } finally {
+      setIsLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     console.log("[v0] WhatsApp page: Initializing socket connection...")
@@ -150,21 +183,6 @@ export default function WhatsAppPage() {
       }
     }
   }, [selectedSessionId])
-
-  const loadSessions = useCallback(async () => {
-    try {
-      const response = await apiClient.getSessions()
-      if (response.success) {
-        setSessions(response.sessions)
-      }
-    } catch (error) {
-      console.error("Failed to load sessions:", error)
-    }
-  }, [])
-
-  useEffect(() => {
-    loadSessions()
-  }, [loadSessions])
 
   const loadContacts = useCallback(async (sessionId: string) => {
     try {
@@ -244,98 +262,25 @@ export default function WhatsAppPage() {
     })
   }
 
-  const handleCreateSession = async () => {
-    if (!newSessionName.trim()) {
-      setError("O nome da sessão é obrigatório")
+  const handleStartSession = async (sessionId: string) => {
+    const cleanId = sessionId && String(sessionId).trim()
+
+    if (!cleanId || cleanId === "undefined" || cleanId === "null") {
+      console.error("[v0] ERROR: Cannot start session with invalid ID:", sessionId)
+      alert("Erro: ID da sessão inválido. Recarregue a página e tente novamente.")
       return
     }
 
     try {
-      setIsCreating(true)
-      setError(null)
-
-      const sessionName = newSessionName.trim()
-      console.log("[v0] ========== CREATING SESSION ==========")
-      console.log("[v0] Session name:", sessionName)
-
-      const response = await apiClient.createSession({
-        name: sessionName,
-      })
-
-      console.log("[v0] Raw API response:", JSON.stringify(response, null, 2))
-
-      if (!response) {
-        throw new Error("Resposta vazia do servidor")
-      }
-
-      if (!response.success) {
-        throw new Error(response.error || "Falha ao criar sessão")
-      }
-
-      if (!response.session) {
-        console.error("[v0] ERROR: Response missing session object:", response)
-        throw new Error("Resposta inválida: sessão não encontrada")
-      }
-
-      if (!response.session.id) {
-        console.error("[v0] ERROR: Session missing ID field:", response.session)
-        throw new Error("Resposta inválida: ID da sessão não encontrado")
-      }
-
-      const sessionId = response.session.id
-      console.log("[v0] ✅ Session created successfully!")
-      console.log("[v0] Session ID:", sessionId)
-      console.log("[v0] Session name:", response.session.name)
-
-      setNewSessionName("")
-      setCreateDialogOpen(false)
-
-      await loadSessions()
-
-      setSelectedSessionId(sessionId)
-
+      console.log("[v0] Starting session:", cleanId)
+      await apiClient.startSession(cleanId)
       setQrDialogOpen(true)
-
-      console.log("[v0] Auto-starting session...")
-      await apiClient.startSession(sessionId)
-
-      startQRPolling(sessionId)
-
-      console.log("[v0] ========== SESSION CREATION COMPLETE ==========")
+      startQRPolling(cleanId)
+      console.log("[v0] ✅ Session start initiated")
     } catch (error: any) {
-      console.error("[v0] ========== ERROR CREATING SESSION ==========")
-      console.error("[v0] Error:", error)
-      console.error("[v0] Error message:", error.message)
-      console.error("[v0] Error stack:", error.stack)
-      setError(error.message || "Erro ao criar sessão")
-    } finally {
-      setIsCreating(false)
+      console.error("[v0] ERROR starting session:", error)
+      alert(error.message || "Erro ao iniciar sessão")
     }
-  }
-
-  const startQRPolling = (sessionId: string) => {
-    if (qrPollingInterval) {
-      clearInterval(qrPollingInterval)
-    }
-
-    const interval = setInterval(async () => {
-      try {
-        const response = await apiClient.getSessionStatus(sessionId)
-
-        if (response.status === "connected") {
-          clearInterval(interval)
-          setQrDialogOpen(false)
-          setQrCodeData(null)
-          await loadSessions()
-        } else if (response.qr) {
-          setQrCodeData(response.qr)
-        }
-      } catch (error) {
-        console.error("Error polling QR status:", error)
-      }
-    }, 3000)
-
-    setQrPollingInterval(interval)
   }
 
   const handleDeleteSession = async (sessionId: string) => {
@@ -399,6 +344,117 @@ export default function WhatsAppPage() {
         return <Badge variant="outline">{status}</Badge>
     }
   }
+
+  const startQRPolling = (sessionId: string) => {
+    if (qrPollingInterval) {
+      clearInterval(qrPollingInterval)
+    }
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await apiClient.getSessionStatus(sessionId)
+
+        if (response.status === "connected") {
+          clearInterval(interval)
+          setQrDialogOpen(false)
+          setQrCodeData(null)
+          await loadSessions()
+        } else if (response.qr) {
+          setQrCodeData(response.qr)
+        }
+      } catch (error) {
+        console.error("Error polling QR status:", error)
+      }
+    }, 3000)
+
+    setQrPollingInterval(interval)
+  }
+
+  const handleCreateSession = async () => {
+    if (!newSessionName.trim()) {
+      setError("O nome da sessão é obrigatório")
+      return
+    }
+
+    try {
+      setIsCreating(true)
+      setError(null)
+
+      const sessionName = newSessionName.trim()
+      console.log("[v0] ========== CREATING SESSION ==========")
+      console.log("[v0] Session name (input):", sessionName)
+
+      const response = await apiClient.createSession({ name: sessionName })
+      console.log("[v0] Raw API response (createSession):", JSON.stringify(response, null, 2))
+
+      if (!response) {
+        throw new Error("Resposta vazia do servidor ao criar sessão")
+      }
+
+      if (response.success === false) {
+        throw new Error(response.error || response.message || "Falha ao criar sessão")
+      }
+
+      // Try to find session data in various possible response structures
+      const sessionPayload = response.session || response.data || response.result || response
+
+      if (!sessionPayload) {
+        console.error("[v0] ERROR: Response missing session object:", response)
+        throw new Error("Resposta inválida: sessão não encontrada no payload")
+      }
+
+      // Try multiple possible ID fields
+      const sessionId =
+        sessionPayload.id ||
+        sessionPayload.sessionId ||
+        sessionPayload.session ||
+        sessionPayload.instanceId ||
+        sessionPayload.instance
+
+      if (!sessionId) {
+        console.error("[v0] ERROR: Session missing ID field:", sessionPayload)
+        throw new Error("Resposta inválida: ID da sessão não encontrado")
+      }
+
+      const sessionNameFromApi =
+        sessionPayload.name ||
+        sessionPayload.sessionName ||
+        sessionPayload.phone_number ||
+        sessionPayload.phone ||
+        sessionPayload.session ||
+        sessionName
+
+      console.log("[v0] ✅ Session created successfully!")
+      console.log("[v0] Session ID:", sessionId)
+      console.log("[v0] Session name (API):", sessionNameFromApi)
+
+      setNewSessionName("")
+      setCreateDialogOpen(false)
+
+      // Reload sessions to get the updated list
+      await loadSessions()
+
+      const cleanId = String(sessionId)
+      setSelectedSessionId(cleanId)
+      setQrDialogOpen(true)
+
+      console.log("[v0] Auto-starting session...")
+      await apiClient.startSession(cleanId)
+      startQRPolling(cleanId)
+      console.log("[v0] ========== SESSION CREATION COMPLETE ==========")
+    } catch (error: any) {
+      console.error("[v0] ========== ERROR CREATING SESSION ==========")
+      console.error("[v0] Error:", error)
+      console.error("[v0] Error message:", error.message)
+      setError(error.message || "Erro ao criar sessão")
+    } finally {
+      setIsCreating(false)
+    }
+  }
+
+  useEffect(() => {
+    loadSessions()
+  }, [loadSessions])
 
   if (isLoading) {
     return (
