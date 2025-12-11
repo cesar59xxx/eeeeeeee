@@ -68,7 +68,8 @@ export default function InboxPage() {
     async function loadMessages() {
       try {
         const data = await apiClient.getContact(selectedContact._id)
-        setMessages(data.recentMessages || [])
+        const uniqueMessages = Array.from(new Map((data.recentMessages || []).map((m: Message) => [m._id, m])).values())
+        setMessages(uniqueMessages)
       } catch (error) {
         console.error("Failed to load messages:", error)
       }
@@ -94,12 +95,27 @@ export default function InboxPage() {
 
     const handleNewMessage = (data: any) => {
       if (selectedContact && data.contact._id === selectedContact._id) {
-        setMessages((prev) => [...prev, data.message])
+        setMessages((prev) => {
+          const exists = prev.some((m) => m._id === data.message._id)
+          if (exists) {
+            console.log("[v0] Duplicate message detected, skipping")
+            return prev
+          }
+          return [...prev, data.message]
+        })
       }
 
       // Atualizar último contato na lista
       setContacts((prev) =>
-        prev.map((c) => (c._id === data.contact._id ? { ...c, lastInteraction: data.message.timestamp } : c)),
+        prev.map((c) =>
+          c._id === data.contact._id
+            ? {
+                ...c,
+                lastInteraction: data.message.timestamp,
+                unreadCount: selectedContact?._id === c._id ? 0 : (c.unreadCount || 0) + 1,
+              }
+            : c,
+        ),
       )
     }
 

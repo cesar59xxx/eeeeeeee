@@ -172,6 +172,12 @@ export default function WhatsAppPage() {
       )
       setQrDialogOpen(false)
       setQrCodeData(null)
+      loadSessions()
+    })
+
+    newSocket.on("whatsapp:session-updated", () => {
+      console.log("[v0] Session updated, reloading...")
+      loadSessions()
     })
 
     newSocket.on("whatsapp:message", ({ message }) => {
@@ -184,7 +190,21 @@ export default function WhatsAppPage() {
     return () => {
       newSocket.close()
     }
-  }, [authToken, qrSessionId])
+  }, [authToken, qrSessionId, loadSessions])
+
+  useEffect(() => {
+    if (!authToken) return
+
+    // Initial load
+    loadSessions()
+
+    // Poll every 30 seconds
+    const interval = setInterval(() => {
+      loadSessions()
+    }, 30000)
+
+    return () => clearInterval(interval)
+  }, [authToken, loadSessions])
 
   useEffect(() => {
     if (socket && selectedSessionId) {
@@ -322,25 +342,6 @@ export default function WhatsAppPage() {
     },
     [authenticatedFetch],
   )
-
-  useEffect(() => {
-    if (authToken) {
-      loadSessions()
-    }
-  }, [authToken, loadSessions])
-
-  useEffect(() => {
-    if (selectedSessionId) {
-      loadContacts(selectedSessionId)
-      loadMessages(selectedSessionId)
-    }
-  }, [selectedSessionId, loadContacts, loadMessages])
-
-  useEffect(() => {
-    if (selectedSessionId && selectedContact) {
-      loadMessages(selectedSessionId, selectedContact.id)
-    }
-  }, [selectedSessionId, selectedContact, loadMessages])
 
   const getStatusBadge = (status: string, isConnected?: boolean) => {
     if (isConnected || status === "connected") {

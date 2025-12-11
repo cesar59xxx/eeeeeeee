@@ -162,24 +162,65 @@ class APIClient {
     return this.request(`/api/whatsapp/sessions/${sessionId}/status`)
   }
 
-  async getContacts(sessionId: string, limit?: number) {
-    const params = new URLSearchParams()
-    if (limit) params.set("limit", String(limit))
-    const query = params.toString() ? `?${params.toString()}` : ""
-    return this.request(`/api/whatsapp/${sessionId}/contacts${query}`)
+  async getContacts(params?: { limit?: number; sessionId?: string }) {
+    const searchParams = new URLSearchParams()
+    if (params?.limit) searchParams.set("limit", String(params.limit))
+    if (params?.sessionId) searchParams.set("sessionId", params.sessionId)
+    const query = searchParams.toString() ? `?${searchParams.toString()}` : ""
+    return this.request(`/api/contacts${query}`)
   }
 
-  async getMessages(sessionId: string, contactId?: string) {
-    const endpoint = contactId
-      ? `/api/whatsapp/${sessionId}/messages/${contactId}`
-      : `/api/whatsapp/${sessionId}/messages`
-    return this.request(endpoint)
+  async getContact(contactId: string) {
+    return this.request(`/api/contacts/${contactId}`)
   }
 
-  async sendMessage(sessionId: string, data: { to: string; body: string }) {
-    return this.request(`/api/whatsapp/${sessionId}/messages`, {
+  async updateContact(contactId: string, data: any) {
+    return this.request(`/api/contacts/${contactId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async sendMessage(data: { sessionId: string; contactId: string; content: any; type: string }) {
+    return this.request("/api/messages", {
       method: "POST",
       body: JSON.stringify(data),
+    })
+  }
+
+  // Chatbot flow endpoints
+  async getChatbotFlows() {
+    return this.request("/api/chatbot/flows")
+  }
+
+  async getChatbotFlow(flowId: string) {
+    return this.request(`/api/chatbot/flows/${flowId}`)
+  }
+
+  async createChatbotFlow(data: any) {
+    return this.request("/api/chatbot/flows", {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateChatbotFlow(flowId: string, data: any) {
+    return this.request(`/api/chatbot/flows/${flowId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteChatbotFlow(flowId: string) {
+    return this.request(`/api/chatbot/flows/${flowId}`, {
+      method: "DELETE",
+    })
+  }
+
+  async toggleChatbotFlow(flowId: string, isActive: boolean) {
+    return this.request(`/api/chatbot/flows/${flowId}/toggle`, {
+      method: "POST",
+      body: JSON.stringify({ isActive }),
     })
   }
 
@@ -192,6 +233,19 @@ class APIClient {
     return this.request(endpoint, {
       method: "POST",
       body: JSON.stringify(data),
+    })
+  }
+
+  async put(endpoint: string, data: any) {
+    return this.request(endpoint, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    })
+  }
+
+  async delete(endpoint: string) {
+    return this.request(endpoint, {
+      method: "DELETE",
     })
   }
 }

@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useEffect, useState } from "react"
 import { apiClient } from "@/lib/api-client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Plus, MoreHorizontal, MessageSquare } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 import { ptBR } from "date-fns/locale"
+import { socketClient } from "@/lib/socket-client" // Import socketClient
 
 interface Contact {
   _id: string
@@ -38,20 +38,41 @@ export default function PipelinePage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [draggedContact, setDraggedContact] = useState<Contact | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadContacts = async () => {
+    try {
+      setError(null)
+      const data = await apiClient.getContacts({ limit: 500 })
+      setContacts(data.contacts)
+    } catch (error) {
+      console.error("Failed to load contacts:", error)
+      setError("Falha ao carregar contatos. Tente novamente.")
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   useEffect(() => {
-    async function loadContacts() {
-      try {
-        const data = await apiClient.getContacts({ limit: 500 })
-        setContacts(data.contacts)
-      } catch (error) {
-        console.error("Failed to load contacts:", error)
-      } finally {
-        setIsLoading(false)
+    loadContacts()
+
+    const socket = socketClient.getSocket()
+    if (socket) {
+      socket.on("contact:updated", (updatedContact: Contact) => {
+        console.log("[v0] Contact updated:", updatedContact._id)
+        setContacts((prev) => prev.map((c) => (c._id === updatedContact._id ? updatedContact : c)))
+      })
+
+      socket.on("contact:created", (newContact: Contact) => {
+        console.log("[v0] New contact created:", newContact._id)
+        setContacts((prev) => [newContact, ...prev])
+      })
+
+      return () => {
+        socket.off("contact:updated")
+        socket.off("contact:created")
       }
     }
-
-    loadContacts()
   }, [])
 
   const getContactsByStage = (stageId: string) => {
@@ -76,22 +97,62 @@ export default function PipelinePage() {
       return
     }
 
+    const previousStage = draggedContact.pipelineStage
+    setContacts((prev) => prev.map((c) => (c._id === draggedContact._id ? { ...c, pipelineStage: newStage } : c)))
+
     try {
       await apiClient.updateContact(draggedContact._id, {
         pipelineStage: newStage,
       })
-
-      setContacts((prev) => prev.map((c) => (c._id === draggedContact._id ? { ...c, pipelineStage: newStage } : c)))
+      await loadContacts()
     } catch (error) {
       console.error("Failed to update contact stage:", error)
       alert("Erro ao atualizar etapa do contato")
+      setContacts((prev) =>
+        prev.map((c) => (c._id === draggedContact._id ? { ...c, pipelineStage: previousStage } : c)),
+      )
     } finally {
       setDraggedContact(null)
     }
   }
 
   if (isLoading) {
-    return <div>Carregando...</div>
+    return (
+      <div className="flex items-center justify-center h-[calc(100vh-8rem)]">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Carregando pipeline...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <Card className="h-full">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-red-500" />
+                <CardTitle className="text-base">Erro</CardTitle>
+              </div>
+              <Badge variant="secondary">{0}</Badge>
+            </div>
+          </CardHeader>
+          <ScrollArea className="h-[calc(100vh-24rem)]">
+            <CardContent className="space-y-3">
+              <div className="text-center text-muted-foreground text-sm py-8">
+                {error}
+                <Button variant="link" onClick={loadContacts} className="ml-2">
+                  Tentar novamente
+                </Button>
+              </div>
+            </CardContent>
+          </ScrollArea>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -108,7 +169,6 @@ export default function PipelinePage() {
         </Button>
       </div>
 
-      {/* Estatísticas Rápidas */}
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
@@ -149,7 +209,6 @@ export default function PipelinePage() {
         </Card>
       </div>
 
-      {/* Kanban Board */}
       <div className="flex gap-4 overflow-x-auto pb-4">
         {stages.map((stage) => {
           const stageContacts = getContactsByStage(stage.id)

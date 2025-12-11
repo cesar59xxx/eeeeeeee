@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useCallback, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
 import ReactFlow, {
@@ -43,23 +42,30 @@ export default function FlowEditorPage() {
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
   const [showNodeEditor, setShowNodeEditor] = useState(false)
   const [flowName, setFlowName] = useState("Novo Fluxo")
+  const [flowDescription, setFlowDescription] = useState("")
   const [saving, setSaving] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
     if (params.id && params.id !== "new") {
       loadFlow()
+    } else {
+      setIsLoading(false)
     }
   }, [params.id])
 
   const loadFlow = async () => {
     try {
-      const response = await apiClient.get(`/chatbot/flows/${params.id}`)
-      const flow = response.data
+      const response = await apiClient.getChatbotFlow(params.id as string)
+      const flow = response.flow
       setFlowName(flow.name)
+      setFlowDescription(flow.description || "")
       setNodes(flow.nodes || [])
       setEdges(flow.edges || [])
     } catch (error) {
       toast.error("Erro ao carregar fluxo")
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -119,20 +125,31 @@ export default function FlowEditorPage() {
   }
 
   const saveFlow = async () => {
+    if (!flowName.trim()) {
+      toast.error("Nome do fluxo é obrigatório")
+      return
+    }
+
     setSaving(true)
     try {
       const flowData = {
         name: flowName,
+        description: flowDescription,
         nodes,
         edges,
         isActive: true,
+        trigger: nodes.find((n) => n.data.type === "trigger")?.data.config || { type: "keyword" },
+        stats: {
+          totalExecutions: 0,
+          totalCompletions: 0,
+        },
       }
 
       if (params.id === "new") {
-        await apiClient.post("/chatbot/flows", flowData)
+        await apiClient.createChatbotFlow(flowData)
         toast.success("Fluxo criado com sucesso")
       } else {
-        await apiClient.put(`/chatbot/flows/${params.id}`, flowData)
+        await apiClient.updateChatbotFlow(params.id as string, flowData)
         toast.success("Fluxo salvo com sucesso")
       }
       router.push("/chatbots")
@@ -143,6 +160,14 @@ export default function FlowEditorPage() {
     }
   }
 
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-screen flex-col bg-background">
       <div className="flex items-center justify-between border-b bg-card px-6 py-4">
@@ -150,7 +175,20 @@ export default function FlowEditorPage() {
           <Button variant="ghost" size="icon" onClick={() => router.push("/chatbots")}>
             <ChevronLeft className="h-5 w-5" />
           </Button>
-          <Input value={flowName} onChange={(e) => setFlowName(e.target.value)} className="max-w-xs" />
+          <div className="flex flex-col gap-1">
+            <Input
+              value={flowName}
+              onChange={(e) => setFlowName(e.target.value)}
+              placeholder="Nome do fluxo"
+              className="max-w-xs"
+            />
+            <Input
+              value={flowDescription}
+              onChange={(e) => setFlowDescription(e.target.value)}
+              placeholder="Descrição"
+              className="max-w-xs text-sm"
+            />
+          </div>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" disabled>

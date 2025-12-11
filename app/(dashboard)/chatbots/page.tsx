@@ -1,10 +1,14 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Plus, Bot, Play, Pause, Edit, Trash2, Copy } from "lucide-react"
+import { Plus, Bot, Play, Pause, Edit, Trash2, Copy, AlertCircle } from "lucide-react"
+import { apiClient } from "@/lib/api-client"
+import { toast } from "sonner"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 
 interface ChatbotFlow {
   _id: string
@@ -21,7 +25,78 @@ interface ChatbotFlow {
 }
 
 export default function ChatbotsPage() {
-  const [flows] = useState<ChatbotFlow[]>([])
+  const router = useRouter()
+  const [flows, setFlows] = useState<ChatbotFlow[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    loadFlows()
+  }, [])
+
+  const loadFlows = async () => {
+    try {
+      setError(null)
+      const response = await apiClient.getChatbotFlows()
+      setFlows(response.flows || [])
+    } catch (error: any) {
+      console.error("Failed to load flows:", error)
+      setError("Falha ao carregar chatbots. Verifique sua conexão.")
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const toggleFlow = async (flowId: string, currentState: boolean) => {
+    try {
+      await apiClient.toggleChatbotFlow(flowId, !currentState)
+      setFlows((prev) => prev.map((f) => (f._id === flowId ? { ...f, isActive: !currentState } : f)))
+      toast.success(currentState ? "Chatbot pausado" : "Chatbot ativado")
+    } catch (error) {
+      toast.error("Erro ao atualizar chatbot")
+    }
+  }
+
+  const deleteFlow = async (flowId: string) => {
+    if (!confirm("Tem certeza que deseja excluir este chatbot?")) return
+
+    try {
+      await apiClient.deleteChatbotFlow(flowId)
+      setFlows((prev) => prev.filter((f) => f._id !== flowId))
+      toast.success("Chatbot excluído")
+    } catch (error) {
+      toast.error("Erro ao excluir chatbot")
+    }
+  }
+
+  const duplicateFlow = async (flowId: string) => {
+    try {
+      const flow = flows.find((f) => f._id === flowId)
+      if (!flow) return
+
+      const response = await apiClient.createChatbotFlow({
+        ...flow,
+        name: `${flow.name} (Cópia)`,
+        isActive: false,
+      })
+
+      setFlows((prev) => [response.flow, ...prev])
+      toast.success("Chatbot duplicado")
+    } catch (error) {
+      toast.error("Erro ao duplicar chatbot")
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-[calc(100vh-8rem)]">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Carregando chatbots...</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -31,13 +106,25 @@ export default function ChatbotsPage() {
           <p className="text-muted-foreground">Automatize seu atendimento com fluxos inteligentes</p>
         </div>
 
-        <Button>
+        <Button onClick={() => router.push("/chatbots/new")}>
           <Plus className="h-4 w-4 mr-2" />
           Novo Chatbot
         </Button>
       </div>
 
-      {flows.length === 0 ? (
+      {error && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            {error}
+            <Button variant="link" onClick={loadFlows} className="ml-2">
+              Tentar novamente
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {flows.length === 0 && !error ? (
         <Card>
           <CardContent className="py-16 text-center">
             <Bot className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
@@ -45,7 +132,7 @@ export default function ChatbotsPage() {
             <p className="text-muted-foreground mb-6 max-w-md mx-auto">
               Crie seu primeiro chatbot para automatizar respostas e qualificar leads automaticamente
             </p>
-            <Button>
+            <Button onClick={() => router.push("/chatbots/new")}>
               <Plus className="h-4 w-4 mr-2" />
               Criar Primeiro Chatbot
             </Button>
@@ -88,7 +175,12 @@ export default function ChatbotsPage() {
                   </div>
 
                   <div className="flex gap-2 pt-2">
-                    <Button variant="outline" size="sm" className="flex-1 bg-transparent">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 bg-transparent"
+                      onClick={() => toggleFlow(flow._id, flow.isActive)}
+                    >
                       {flow.isActive ? (
                         <>
                           <Pause className="h-3 w-3 mr-1" />
@@ -101,13 +193,13 @@ export default function ChatbotsPage() {
                         </>
                       )}
                     </Button>
-                    <Button variant="outline" size="sm">
+                    <Button variant="outline" size="sm" onClick={() => router.push(`/chatbots/${flow._id}`)}>
                       <Edit className="h-3 w-3" />
                     </Button>
-                    <Button variant="outline" size="sm">
+                    <Button variant="outline" size="sm" onClick={() => duplicateFlow(flow._id)}>
                       <Copy className="h-3 w-3" />
                     </Button>
-                    <Button variant="outline" size="sm">
+                    <Button variant="outline" size="sm" onClick={() => deleteFlow(flow._id)}>
                       <Trash2 className="h-3 w-3" />
                     </Button>
                   </div>
@@ -118,7 +210,6 @@ export default function ChatbotsPage() {
         </div>
       )}
 
-      {/* Templates Section */}
       <div className="space-y-4">
         <h2 className="text-2xl font-bold">Templates Prontos</h2>
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
