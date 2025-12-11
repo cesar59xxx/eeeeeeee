@@ -64,55 +64,57 @@ export default function WhatsAppPage() {
   const [error, setError] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [socket, setSocket] = useState<Socket | null>(null)
-  const [authToken, setAuthToken] = useState<string | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
 
   const supabase = createClient()
 
   useEffect(() => {
-    const getToken = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
-      if (session?.access_token && session?.user?.id) {
-        setAuthToken(session.access_token)
-        setUserId(session.user.id)
-        console.log("[v0] Auth token and user ID obtained")
-      } else {
-        console.warn("[v0] No auth session found")
+    const initAuth = async () => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession()
+        if (session?.user?.id) {
+          setUserId(session.user.id)
+          console.log("[v0] User ID:", session.user.id)
+        } else {
+          console.warn("[v0] No session found")
+        }
+      } catch (error) {
+        console.error("[v0] Auth error:", error)
       }
     }
-    getToken()
+    initAuth()
   }, [])
 
-  const authenticatedFetch = useCallback(
-    async (url: string, options: RequestInit = {}) => {
-      if (!authToken) {
-        throw new Error("Not authenticated")
+  const apiFetch = useCallback(async (url: string, options: RequestInit = {}) => {
+    const response = await fetch(`${API_URL}${url}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options.headers,
+      },
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      let errorMessage = response.statusText
+      try {
+        const errorJson = JSON.parse(errorText)
+        errorMessage = errorJson.error || errorJson.message || errorMessage
+      } catch {
+        errorMessage = errorText || errorMessage
       }
+      console.error("[v0] Request Failed:", errorMessage)
+      throw new Error(errorMessage)
+    }
 
-      const response = await fetch(`${API_URL}${url}`, {
-        ...options,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authToken}`,
-          ...options.headers,
-        },
-      })
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: response.statusText }))
-        throw new Error(error.error || error.message || "Request failed")
-      }
-
-      return response.json()
-    },
-    [authToken],
-  )
+    return response.json()
+  }, [])
 
   const loadSessions = useCallback(async () => {
-    if (!authToken || !userId) {
-      console.log("[v0] Cannot load sessions: missing auth or userId")
+    if (!userId) {
+      console.log("[v0] Waiting for userId...")
       return
     }
 
@@ -120,7 +122,7 @@ export default function WhatsAppPage() {
       setIsLoading(true)
       console.log("[v0] Loading sessions for user:", userId)
 
-      const data = await authenticatedFetch(`/api/whatsapp/sessions?user_id=${encodeURIComponent(userId)}`)
+      const data = await apiFetch(`/api/whatsapp/sessions?user_id=${encodeURIComponent(userId)}`)
       const rawSessions = data?.sessions || data || []
 
       const normalized: Session[] = rawSessions.map((s: any) => ({
@@ -135,13 +137,14 @@ export default function WhatsAppPage() {
 
       console.log("[v0] Loaded", normalized.length, "sessions")
       setSessions(normalized)
+      setError(null)
     } catch (error: any) {
       console.error("[v0] Failed to load sessions:", error)
       setError(error.message)
     } finally {
       setIsLoading(false)
     }
-  }, [authToken, userId, authenticatedFetch])
+  }, [userId, apiFetch])
 
   useEffect(() => {
     console.log("[v0] Connecting to WebSocket:", WS_URL)
@@ -193,11 +196,12 @@ export default function WhatsAppPage() {
     return () => {
       newSocket.close()
     }
-  }, [authToken, qrSessionId, loadSessions])
+  }, [qrSessionId, loadSessions])
 
   useEffect(() => {
-    if (!authToken || !userId) {
-      console.log("[v0] Skipping loadSessions - waiting for auth and userId")
+    if (!userId) {
+      console.log("[v0] Skipping loadSessions - waiting for userId")
+      setIsLoading(false)
       return
     }
 
@@ -208,7 +212,7 @@ export default function WhatsAppPage() {
     }, 30000)
 
     return () => clearInterval(interval)
-  }, [authToken, userId, loadSessions])
+  }, [userId, loadSessions])
 
   useEffect(() => {
     if (socket && selectedSessionId) {
@@ -237,7 +241,7 @@ export default function WhatsAppPage() {
     try {
       console.log("[v0] Creating session:", name, "for user:", userId)
 
-      const data = await authenticatedFetch("/api/whatsapp/sessions", {
+      const data = await apiFetch("/api/whatsapp/sessions", {
         method: "POST",
         body: JSON.stringify({
           name: name,
@@ -277,7 +281,7 @@ export default function WhatsAppPage() {
       setQrDialogOpen(true)
       setQrCodeData(null)
 
-      await authenticatedFetch(`/api/whatsapp/sessions/${sessionId}/start`, {
+      await apiFetch(`/api/whatsapp/sessions/${sessionId}/start`, {
         method: "POST",
       })
 
@@ -293,7 +297,7 @@ export default function WhatsAppPage() {
     if (!confirm("Excluir esta sessão?")) return
 
     try {
-      await authenticatedFetch(`/api/whatsapp/sessions/${sessionId}`, {
+      await apiFetch(`/api/whatsapp/sessions/${sessionId}`, {
         method: "DELETE",
       })
 
@@ -311,7 +315,7 @@ export default function WhatsAppPage() {
     if (!newMessage.trim() || !selectedSessionId || !selectedContact) return
 
     try {
-      await authenticatedFetch(`/api/whatsapp/sessions/${selectedSessionId}/messages`, {
+      await apiFetch(`/api/whatsapp/sessions/${selectedSessionId}/messages`, {
         method: "POST",
         body: JSON.stringify({
           to: selectedContact.whatsappId,
@@ -331,14 +335,14 @@ export default function WhatsAppPage() {
     async (sessionId: string) => {
       try {
         console.log("[v0] Loading contacts for session:", sessionId)
-        const data = await authenticatedFetch(`/api/whatsapp/sessions/${sessionId}/contacts`)
+        const data = await apiFetch(`/api/whatsapp/sessions/${sessionId}/contacts`)
         setContacts(data.contacts || [])
         console.log("[v0] Loaded", data.contacts?.length, "contacts")
       } catch (error) {
         console.error("[v0] Error loading contacts:", error)
       }
     },
-    [authenticatedFetch],
+    [apiFetch],
   )
 
   const loadMessages = useCallback(
@@ -348,14 +352,14 @@ export default function WhatsAppPage() {
         const url = contactId
           ? `/api/whatsapp/sessions/${sessionId}/messages?contactId=${contactId}`
           : `/api/whatsapp/sessions/${sessionId}/messages`
-        const data = await authenticatedFetch(url)
+        const data = await apiFetch(url)
         setMessages(data.messages || [])
         console.log("[v0] Loaded", data.messages?.length, "messages")
       } catch (error) {
         console.error("[v0] Error loading messages:", error)
       }
     },
-    [authenticatedFetch],
+    [apiFetch],
   )
 
   const getStatusBadge = (status: string, isConnected?: boolean) => {
@@ -378,7 +382,7 @@ export default function WhatsAppPage() {
     )
   }
 
-  if (!authToken || !userId) {
+  if (!userId) {
     return (
       <Alert variant="destructive">
         <AlertCircle className="h-4 w-4" />
