@@ -361,7 +361,7 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
     const { data: createdSession, error: sessionCreateError } = await supabase
       .from("whatsapp_sessions")
       .insert(sessionInsertData)
-      .select("id, tenant_id, phone_number, status, qr_code")
+      .select("id, tenant_id, phone_number, status")
       .single()
 
     if (sessionCreateError || !createdSession) {
@@ -373,13 +373,15 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       })
     }
 
-    console.log("[v0] ✅ Session created with ID:", createdSession.id)
+    console.log("[v0] ✅ Session created in database")
+    console.log("[v0] Session ID:", createdSession.id)
+    console.log("[v0] Session phone_number:", createdSession.phone_number)
 
     const responseData = {
       success: true,
       session: {
         id: createdSession.id,
-        name: createdSession.phone_number, // Map phone_number to name for frontend
+        name: createdSession.phone_number,
         status: createdSession.status,
         phone: createdSession.phone_number,
         tenant_id: createdSession.tenant_id,
@@ -388,7 +390,7 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       message: "Session created successfully",
     }
 
-    console.log("[v0] ✅ Sending success response with session ID:", createdSession.id)
+    console.log("[v0] ✅ Sending response:", JSON.stringify(responseData, null, 2))
     console.log("[v0] ========================================")
 
     return res.status(201).json(responseData)
@@ -451,68 +453,36 @@ app.post("/api/whatsapp/sessions/:id/start", async (req, res) => {
       .eq("id", id)
 
     if (updateError) {
-      console.error("[v0] ERROR: Failed to update status:", updateError)
+      console.error("[v0] ERROR: Failed to update session status:", updateError)
     }
 
-    console.log("[v0] Starting WhatsApp initialization...")
-    setImmediate(() => {
-      whatsappManager.initializeSession(id).catch((error) => {
-        console.error("[v0] ERROR: WhatsApp initialization failed:", error)
-      })
+    console.log("[v0] Initializing WhatsApp client...")
+    setImmediate(async () => {
+      try {
+        await whatsappManager.createSession(id, session.tenant_id)
+        console.log("[v0] ✅ WhatsApp client initialized")
+      } catch (error) {
+        console.error("[v0] ERROR initializing WhatsApp:", error)
+        await supabase.from("whatsapp_sessions").update({ status: "error" }).eq("id", id)
+      }
     })
 
     console.log("[v0] ✅ Session start initiated")
-    console.log("[v0] =====================================")
+    console.log("[v0] ======================================")
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       message: "Session initialization started",
       sessionId: id,
     })
   } catch (error) {
-    console.error("[v0] ERROR starting session:", error)
+    console.error("[v0] ========== ERROR ==========")
+    console.error("[v0]", error)
+    console.error("[v0] ==============================")
+
     return res.status(500).json({
       success: false,
       error: "Failed to start session",
-      details: error.message,
-    })
-  }
-})
-
-app.get("/api/whatsapp/sessions/:sessionId/qr", async (req, res) => {
-  try {
-    const { sessionId } = req.params
-    console.log("[v0] GET /api/whatsapp/sessions/:sessionId/qr:", sessionId)
-
-    const { data: session, error } = await supabase
-      .from("whatsapp_sessions")
-      .select("status")
-      .eq("session_id", sessionId)
-      .single()
-
-    if (error || !session) {
-      console.error("[v0] Session not found:", error)
-      return res.status(404).json({
-        error: true,
-        message: "Session not found",
-        details: error?.message || "No session with this ID",
-      })
-    }
-
-    res.json({
-      qr: null,
-      qrCode: null,
-      status: session.status,
-      message:
-        session.status === "qr"
-          ? "QR code is being emitted via WebSocket. Listen to 'whatsapp:qr' event."
-          : "Connect the session to generate QR code",
-    })
-  } catch (error) {
-    console.error("Error fetching QR code:", error)
-    res.status(500).json({
-      error: true,
-      message: "Failed to fetch QR code",
       details: error.message,
     })
   }
