@@ -18,7 +18,7 @@ const app = express()
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL || "*",
+    origin: ["http://localhost:3000", "https://eeeeeeee-eight.vercel.app", process.env.FRONTEND_URL].filter(Boolean),
     credentials: true,
   },
 })
@@ -27,7 +27,12 @@ global.io = io
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }))
 app.use(compression())
-app.use(cors({ origin: process.env.FRONTEND_URL || "*", credentials: true }))
+app.use(
+  cors({
+    origin: ["http://localhost:3000", "https://eeeeeeee-eight.vercel.app", process.env.FRONTEND_URL].filter(Boolean),
+    credentials: true,
+  }),
+)
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
