@@ -77,6 +77,48 @@ app.get("/health", (req, res) => {
   })
 })
 
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "No authorization token" })
+    }
+
+    const token = authHeader.substring(7)
+
+    let supabase = null
+    try {
+      const supabaseModule = await import("./config/supabase.js")
+      supabase = supabaseModule.supabase
+      console.log("✅ Supabase importado com sucesso")
+    } catch (error) {
+      console.error("⚠️ Erro ao importar Supabase:", error.message)
+    }
+
+    if (!supabase) {
+      return res.status(503).json({ error: "Supabase not configured" })
+    }
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser(token)
+
+    if (authError || !user) {
+      return res.status(401).json({ error: "Invalid token" })
+    }
+
+    res.json({
+      id: user.id,
+      email: user.email,
+      user_metadata: user.user_metadata,
+    })
+  } catch (error) {
+    console.error("Error validating user:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
 let whatsappManager = null
 let supabase = null
 
@@ -126,6 +168,8 @@ app.post("/api/whatsapp/sessions", checkServices, async (req, res) => {
   try {
     const { name, user_id } = req.body
 
+    console.log("[v0] Create session request:", { name, user_id })
+
     if (!name || !user_id) {
       return res.status(400).json({ error: "Name and user_id are required" })
     }
@@ -145,11 +189,19 @@ app.post("/api/whatsapp/sessions", checkServices, async (req, res) => {
 
     if (error) throw error
 
-    await whatsappManager.initializeSession(data.id)
+    console.log("[v0] Session created in DB:", data.id)
 
-    res.json(data)
+    if (whatsappManager) {
+      await whatsappManager.initializeSession(data.id)
+    }
+
+    res.json({
+      success: true,
+      id: data.id,
+      session: data,
+    })
   } catch (error) {
-    console.error("Error creating session:", error)
+    console.error("[v0] Error creating session:", error)
     res.status(500).json({ error: error.message })
   }
 })
@@ -158,6 +210,8 @@ app.post("/api/whatsapp/sessions", checkServices, async (req, res) => {
 app.get("/api/whatsapp/sessions", checkServices, async (req, res) => {
   try {
     const { user_id } = req.query
+
+    console.log("[v0] Get sessions request for user:", user_id)
 
     if (!user_id) {
       return res.status(400).json({ error: "user_id is required" })
@@ -171,9 +225,11 @@ app.get("/api/whatsapp/sessions", checkServices, async (req, res) => {
 
     if (error) throw error
 
-    res.json(data || [])
+    console.log("[v0] Found", data?.length || 0, "sessions for user")
+
+    res.json({ sessions: data || [] })
   } catch (error) {
-    console.error("Error fetching sessions:", error)
+    console.error("[v0] Error fetching sessions:", error)
     res.status(500).json({ error: error.message })
   }
 })

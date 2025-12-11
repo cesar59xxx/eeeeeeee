@@ -87,26 +87,12 @@ export default function WhatsAppPage() {
 
   const authenticatedFetch = useCallback(
     async (url: string, options: RequestInit = {}) => {
-      if (!authToken || !userId) {
+      if (!authToken) {
         throw new Error("Not authenticated")
-      }
-
-      let body = options.body
-      if (body && typeof body === "string") {
-        try {
-          const parsed = JSON.parse(body)
-          if (!parsed.user_id) {
-            parsed.user_id = userId
-            body = JSON.stringify(parsed)
-          }
-        } catch (e) {
-          // Not JSON, ignore
-        }
       }
 
       const response = await fetch(`${API_URL}${url}`, {
         ...options,
-        body,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${authToken}`,
@@ -121,18 +107,21 @@ export default function WhatsAppPage() {
 
       return response.json()
     },
-    [authToken, userId],
+    [authToken],
   )
 
   const loadSessions = useCallback(async () => {
-    if (!authToken || !userId) return
+    if (!authToken || !userId) {
+      console.log("[v0] Cannot load sessions: missing auth or userId")
+      return
+    }
 
     try {
       setIsLoading(true)
-      console.log("[v0] Loading sessions with auth...")
+      console.log("[v0] Loading sessions for user:", userId)
 
-      const data = await authenticatedFetch(`/api/whatsapp/sessions?user_id=${userId}`)
-      const rawSessions = data?.sessions || []
+      const data = await authenticatedFetch(`/api/whatsapp/sessions?user_id=${encodeURIComponent(userId)}`)
+      const rawSessions = data?.sessions || data || []
 
       const normalized: Session[] = rawSessions.map((s: any) => ({
         id: s.id,
@@ -141,7 +130,7 @@ export default function WhatsAppPage() {
         profileName: s.profileName,
         profilePicUrl: s.profilePicUrl,
         status: s.status,
-        isConnected: s.isActive || s.status === "connected",
+        isConnected: s.isActive || s.is_active || s.status === "connected",
       }))
 
       console.log("[v0] Loaded", normalized.length, "sessions")
@@ -207,7 +196,10 @@ export default function WhatsAppPage() {
   }, [authToken, qrSessionId, loadSessions])
 
   useEffect(() => {
-    if (!authToken || !userId) return
+    if (!authToken || !userId) {
+      console.log("[v0] Skipping loadSessions - waiting for auth and userId")
+      return
+    }
 
     loadSessions()
 
@@ -253,19 +245,24 @@ export default function WhatsAppPage() {
         }),
       })
 
-      if (!data.success || !data.session?.id) {
-        throw new Error("Falha ao criar sessão")
+      if (!data.success && !data.id) {
+        throw new Error(data.error || "Falha ao criar sessão")
       }
 
-      console.log("[v0] Session created:", data.session.id)
+      const sessionId = data.id || data.session?.id
+      if (!sessionId) {
+        throw new Error("Session ID não foi retornado")
+      }
+
+      console.log("[v0] Session created:", sessionId)
 
       setNewSessionName("")
       setCreateDialogOpen(false)
       await loadSessions()
 
-      await handleStartSession(data.session.id)
+      await handleStartSession(sessionId)
     } catch (error: any) {
-      console.error("[v0] Error:", error)
+      console.error("[v0] Error creating session:", error)
       setError(error.message)
     } finally {
       setIsCreating(false)
