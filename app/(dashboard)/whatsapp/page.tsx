@@ -12,8 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Plus, Power, Trash2, Send, MessageCircle, User } from "lucide-react"
 
 interface Session {
-  id: string // UUID do Supabase
-  sessionId: string // session_id usado pelo backend
+  id: string
   name: string
   phone?: string
   status: string
@@ -50,50 +49,37 @@ export default function WhatsAppPage() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [qrDialogOpen, setQrDialogOpen] = useState(false)
   const [qrCodeData, setQrCodeData] = useState<string | null>(null)
-  const [qrPollingInterval, setQrPollingInterval] = useState<NodeJS.Timeout | null>(null)
+  const [qrSessionId, setQrSessionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
 
   const loadSessions = useCallback(async () => {
     try {
       setIsLoading(true)
-
       const response = await apiClient.getSessions()
-      console.log("[v0] RAW /api/whatsapp/sessions:", response)
+      console.log("[v0] GET /api/whatsapp/sessions response:", JSON.stringify(response, null, 2))
 
-      const rawSessions: any[] = (response?.sessions ?? response?.data ?? response?.results ?? []) || []
+      const rawSessions: any[] = response?.sessions || response?.data || []
 
       const normalized: Session[] = rawSessions
-        .map((s) => {
-          const dbId = s.id ?? s.uuid ?? null
-
-          const sessionId = s.session_id ?? s.sessionId ?? s.session ?? null
-
-          if (!sessionId || sessionId === "undefined" || sessionId === "null") {
-            console.error("[v0] Ignorando sessão SEM session_id válido:", s)
-            return null
+        .filter((s) => {
+          // Aceitar se tiver "id" válido
+          const hasId = s.id && s.id !== "undefined" && s.id !== "null"
+          if (!hasId) {
+            console.warn("[v0] Sessão sem ID válido ignorada:", s)
           }
-
-          const name = s.name ?? s.session_name ?? sessionId
-          const status = s.status ?? s.connection_status ?? "disconnected"
-          const phone = s.phone ?? s.phone_number ?? undefined
-          const qrCode = s.qrCode ?? s.qr_code ?? s.qr ?? undefined
-          const isConnected = s.isConnected ?? (status === "connected" || status === "ready" || status === "WORKING")
-
-          return {
-            id: String(dbId || sessionId),
-            sessionId: String(sessionId),
-            name: String(name),
-            status: String(status),
-            phone,
-            qrCode,
-            isConnected,
-          } as Session
+          return hasId
         })
-        .filter(Boolean) as Session[]
+        .map((s) => ({
+          id: String(s.id),
+          name: s.name || s.phone_number || "Sem nome",
+          phone: s.phone_number || undefined,
+          status: s.status || "disconnected",
+          qrCode: s.qr_code || s.qrCode || undefined,
+          isConnected: s.status === "connected" || s.status === "ready" || s.isConnected === true,
+        }))
 
-      console.log("[v0] NORMALIZED SESSIONS:", normalized)
-
+      console.log("[v0] Sessions normalizadas:", normalized)
       setSessions(normalized)
     } catch (error) {
       console.error("[v0] Failed to load sessions:", error)
@@ -103,21 +89,27 @@ export default function WhatsAppPage() {
   }, [])
 
   useEffect(() => {
-    console.log("[v0] WhatsApp page: Initializing socket connection...")
+    console.log("[v0] Conectando WebSocket...")
+    const socket = socketClient.connect()
 
-    const socketConnection = socketClient.connect()
+    socket.on("whatsapp:qr", ({ sessionId, qr }) => {
+      console.log("[v0] QR Code recebido para sessão:", sessionId)
 
-    socketConnection.on("whatsapp:qr", ({ sessionId, qr }) => {
-      console.log("[v0] Received QR for session:", sessionId)
-      setQrCodeData(qr)
+      // Atualizar QR code se for da sessão que estamos esperando
+      if (qrSessionId === sessionId) {
+        setQrCodeData(qr)
+      }
+
+      // Também atualizar na lista de sessões
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, qrCode: qr, status: "qr" } : s)))
     })
 
-    socketConnection.on("whatsapp:status", ({ sessionId, status }) => {
-      console.log("[v0] Status update:", sessionId, status)
+    socket.on("whatsapp:status", ({ sessionId, status }) => {
+      console.log("[v0] Status update:", sessionId, "->", status)
 
       setSessions((prev) =>
         prev.map((s) =>
-          s.sessionId === sessionId
+          s.id === sessionId
             ? {
                 ...s,
                 status: status === "ready" ? "connected" : status,
@@ -131,6 +123,7 @@ export default function WhatsAppPage() {
       if (status === "ready" || status === "connected") {
         setQrDialogOpen(false)
         setQrCodeData(null)
+        setQrSessionId(null)
 
         if (selectedSessionId === sessionId) {
           loadContacts(sessionId)
@@ -138,8 +131,8 @@ export default function WhatsAppPage() {
       }
     })
 
-    socketConnection.on("whatsapp:message", (messageData) => {
-      console.log("[v0] New message received:", messageData)
+    socket.on("whatsapp:message", (messageData) => {
+      console.log("[v0] Nova mensagem:", messageData)
 
       const newMsg: Message = {
         id: messageData.id || Date.now().toString(),
@@ -161,18 +154,17 @@ export default function WhatsAppPage() {
     return () => {
       socketClient.disconnect()
     }
-  }, [selectedSessionId])
+  }, [selectedSessionId, qrSessionId])
 
   useEffect(() => {
     if (!selectedSessionId) return
 
     const socket = socketClient.getSocket()
     if (socket) {
-      console.log("[v0] Joining session room:", selectedSessionId)
+      console.log("[v0] Entrando na sala da sessão:", selectedSessionId)
       socket.emit("join-session", selectedSessionId)
 
       return () => {
-        console.log("[v0] Leaving session room:", selectedSessionId)
         socket.emit("leave-session", selectedSessionId)
       }
     }
@@ -180,29 +172,25 @@ export default function WhatsAppPage() {
 
   const loadContacts = useCallback(async (sessionId: string) => {
     try {
-      console.log("[v0] Loading contacts for session:", sessionId)
       const response = await apiClient.getContacts(sessionId, 100)
       setContacts(response.contacts || response.data || [])
-      console.log("[v0] Contacts loaded:", response.contacts?.length || 0)
     } catch (error) {
-      console.error("[API ERROR] Failed to load contacts:", error)
+      console.error("[v0] Erro ao carregar contatos:", error)
     }
   }, [])
 
   const loadMessages = useCallback(async (sessionId: string, contactId?: string) => {
     try {
-      console.log("[v0] Loading messages for session:", sessionId, "contact:", contactId)
       const response = await apiClient.getMessages(sessionId, contactId)
       setMessages(response.messages || response.data || [])
-      console.log("[v0] Messages loaded:", response.messages?.length || 0)
     } catch (error) {
-      console.error("[API ERROR] Failed to load messages:", error)
+      console.error("[v0] Erro ao carregar mensagens:", error)
     }
   }, [])
 
   useEffect(() => {
     if (selectedSessionId) {
-      const session = sessions.find((s) => s.sessionId === selectedSessionId)
+      const session = sessions.find((s) => s.id === selectedSessionId)
       if (session?.isConnected) {
         loadContacts(selectedSessionId)
       } else {
@@ -239,27 +227,37 @@ export default function WhatsAppPage() {
   }
 
   const handleStartSession = async (sessionId: string) => {
-    const cleanId = sessionId ? String(sessionId).trim() : ""
-
-    if (!cleanId || cleanId === "undefined" || cleanId === "null") {
-      console.error("[v0] ERROR: Invalid sessionId:", sessionId)
-      alert("Erro: ID da sessão inválido. Crie uma nova sessão.")
+    // Validação estrita
+    if (!sessionId || sessionId === "undefined" || sessionId === "null" || sessionId.trim() === "") {
+      console.error("[v0] handleStartSession: ID inválido:", sessionId)
+      alert("Erro: ID da sessão inválido")
       return
     }
 
     try {
-      console.log("[v0] Starting session:", cleanId)
-      await apiClient.startSession(cleanId)
+      console.log("[v0] Iniciando sessão:", sessionId)
+
+      // Guardar o sessionId para o QR
+      setQrSessionId(sessionId)
       setQrDialogOpen(true)
-      startQRPolling(cleanId)
-      console.log("[v0] Session start initiated")
+      setQrCodeData(null)
+
+      await apiClient.startSession(sessionId)
+      console.log("[v0] Sessão iniciada, aguardando QR via WebSocket...")
     } catch (error: any) {
-      console.error("[v0] ERROR starting session:", error)
+      console.error("[v0] Erro ao iniciar sessão:", error)
       alert(error.message || "Erro ao iniciar sessão")
+      setQrDialogOpen(false)
+      setQrSessionId(null)
     }
   }
 
   const handleDeleteSession = async (sessionId: string) => {
+    if (!sessionId || sessionId === "undefined") {
+      alert("Erro: ID da sessão inválido")
+      return
+    }
+
     if (!confirm("Deseja realmente excluir esta sessão?")) return
 
     try {
@@ -271,7 +269,7 @@ export default function WhatsAppPage() {
         setSelectedContact(null)
       }
     } catch (error: any) {
-      console.error("[v0] Error deleting session:", error)
+      console.error("[v0] Erro ao excluir sessão:", error)
       alert(error.message || "Erro ao excluir sessão")
     }
   }
@@ -299,7 +297,7 @@ export default function WhatsAppPage() {
       setMessages((prev) => [...prev, optimisticMsg])
       setNewMessage("")
     } catch (error: any) {
-      console.error("[v0] Error sending message:", error)
+      console.error("[v0] Erro ao enviar mensagem:", error)
       alert(error.message || "Erro ao enviar mensagem")
     }
   }
@@ -313,41 +311,21 @@ export default function WhatsAppPage() {
       case "qr":
         return <Badge variant="secondary">Aguardando QR</Badge>
       case "authenticated":
-        return <Badge className="bg-blue-500">Autenticando</Badge>
+      case "initializing":
+        return <Badge className="bg-blue-500">Conectando...</Badge>
       case "disconnected":
         return <Badge variant="outline">Desconectado</Badge>
+      case "error":
+        return <Badge variant="destructive">Erro</Badge>
       default:
         return <Badge variant="outline">{status}</Badge>
     }
   }
 
-  const startQRPolling = (sessionId: string) => {
-    if (qrPollingInterval) {
-      clearInterval(qrPollingInterval)
-    }
-
-    const interval = setInterval(async () => {
-      try {
-        const response = await apiClient.getSessionStatus(sessionId)
-
-        if (response.status === "connected" || response.status === "ready") {
-          clearInterval(interval)
-          setQrDialogOpen(false)
-          setQrCodeData(null)
-          await loadSessions()
-        } else if (response.qr) {
-          setQrCodeData(response.qr)
-        }
-      } catch (error) {
-        console.error("Error polling QR status:", error)
-      }
-    }, 3000)
-
-    setQrPollingInterval(interval)
-  }
-
   const handleCreateSession = async () => {
-    if (!newSessionName || newSessionName.trim() === "") {
+    const name = newSessionName.trim()
+
+    if (!name) {
       setError("Nome da sessão é obrigatório")
       return
     }
@@ -356,41 +334,36 @@ export default function WhatsAppPage() {
     setError(null)
 
     try {
-      console.log("[v0] Creating session with name:", newSessionName)
+      console.log("[v0] Criando sessão com nome:", name)
 
-      const response = await apiClient.createSession({
-        name: newSessionName,
-      })
+      const response = await apiClient.createSession({ name })
+      console.log("[v0] Resposta createSession:", JSON.stringify(response, null, 2))
 
-      console.log("[v0] Create session response:", response)
-
+      // Validar resposta
       if (!response || !response.success) {
         throw new Error(response?.error || "Falha ao criar sessão")
       }
 
-      const session = response.session
-      if (!session) {
-        throw new Error("Sessão não foi retornada")
+      if (!response.session || !response.session.id) {
+        console.error("[v0] Resposta inválida - sem session.id:", response)
+        throw new Error("Servidor não retornou ID da sessão")
       }
 
-      const sessionId = session.session_id || session.sessionId || session.id
+      const sessionId = response.session.id
+      console.log("[v0] Sessão criada com ID:", sessionId)
 
-      if (!sessionId || sessionId === "undefined") {
-        console.error("[v0] ERROR: No valid session_id in response:", session)
-        throw new Error("session_id não foi retornado pelo servidor")
-      }
-
-      console.log("[v0] Session created with session_id:", sessionId)
-
+      // Limpar e fechar dialog
       setNewSessionName("")
       setCreateDialogOpen(false)
 
+      // Recarregar lista
       await loadSessions()
 
-      console.log("[v0] Auto-starting session:", sessionId)
+      // Auto-iniciar a sessão
+      console.log("[v0] Iniciando sessão automaticamente:", sessionId)
       await handleStartSession(sessionId)
     } catch (error: any) {
-      console.error("[v0] Error creating session:", error)
+      console.error("[v0] Erro ao criar sessão:", error)
       setError(error.message || "Erro ao criar sessão")
     } finally {
       setIsCreating(false)
@@ -443,9 +416,9 @@ export default function WhatsAppPage() {
               <Card
                 key={session.id}
                 className={`cursor-pointer transition-colors ${
-                  selectedSessionId === session.sessionId ? "border-primary bg-primary/5" : ""
+                  selectedSessionId === session.id ? "border-primary bg-primary/5" : ""
                 }`}
-                onClick={() => setSelectedSessionId(session.sessionId)}
+                onClick={() => setSelectedSessionId(session.id)}
               >
                 <CardHeader className="p-4">
                   <div className="flex items-center justify-between">
@@ -461,14 +434,7 @@ export default function WhatsAppPage() {
                         size="sm"
                         onClick={(e) => {
                           e.stopPropagation()
-
-                          if (!session.sessionId || session.sessionId === "undefined" || session.sessionId === "null") {
-                            console.error("[v0] CLICK ERROR: sessionId inválido:", session)
-                            alert("Erro: essa sessão não possui session_id válido.")
-                            return
-                          }
-
-                          handleStartSession(session.sessionId)
+                          handleStartSession(session.id)
                         }}
                         className="flex-1 text-xs"
                       >
@@ -481,7 +447,7 @@ export default function WhatsAppPage() {
                       variant="destructive"
                       onClick={(e) => {
                         e.stopPropagation()
-                        handleDeleteSession(session.sessionId)
+                        handleDeleteSession(session.id)
                       }}
                       className="text-xs"
                     >
@@ -645,7 +611,16 @@ export default function WhatsAppPage() {
       </Dialog>
 
       {/* Dialog: QR Code */}
-      <Dialog open={qrDialogOpen} onOpenChange={setQrDialogOpen}>
+      <Dialog
+        open={qrDialogOpen}
+        onOpenChange={(open) => {
+          setQrDialogOpen(open)
+          if (!open) {
+            setQrCodeData(null)
+            setQrSessionId(null)
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Conectar WhatsApp</DialogTitle>
