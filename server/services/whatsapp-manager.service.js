@@ -85,24 +85,20 @@ class WhatsAppManager {
             .from("whatsapp_sessions")
             .update({
               status: "qr",
-              updated_at: new Date().toISOString(),
+              qr_code: qr,
             })
-            .eq("session_id", sessionId)
+            .eq("id", sessionId)
 
-          // Emit via Socket.IO with original QR string
           if (global.io) {
             global.io.to(sessionId).emit("whatsapp:qr", {
               sessionId,
-              qr, // Only send via WebSocket, never save in DB
+              qr,
             })
-            // Also emit globally for backward compatibility
             global.io.emit("whatsapp:qr", {
               sessionId,
               qr,
             })
           }
-
-          console.log(`[${sessionId}] QR emitido via WebSocket (não salvo no banco)`)
         } catch (error) {
           console.error(`[${sessionId}] Erro ao processar QR:`, error)
         }
@@ -117,9 +113,8 @@ class WhatsAppManager {
           .update({
             status: "authenticated",
             qr_code: null,
-            updated_at: new Date().toISOString(),
           })
-          .eq("session_id", sessionId)
+          .eq("id", sessionId)
 
         if (global.io) {
           global.io.emit("whatsapp:status", { sessionId, status: "authenticated" })
@@ -137,7 +132,7 @@ class WhatsAppManager {
             qr_code: null,
             updated_at: new Date().toISOString(),
           })
-          .eq("session_id", sessionId)
+          .eq("id", sessionId)
 
         if (global.io) {
           global.io.emit("whatsapp:auth_failure", {
@@ -158,10 +153,9 @@ class WhatsAppManager {
           .update({
             status: "connected",
             phone_number: info.wid.user,
-            last_connected: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
+            qr_code: null,
           })
-          .eq("session_id", sessionId)
+          .eq("id", sessionId)
 
         if (global.io) {
           global.io.to(sessionId).emit("whatsapp:status", {
@@ -169,7 +163,6 @@ class WhatsAppManager {
             status: "connected",
             phoneNumber: info.wid.user,
           })
-          // Also emit globally
           global.io.emit("session-connected", {
             sessionId,
             phoneNumber: info.wid.user,
@@ -185,11 +178,9 @@ class WhatsAppManager {
           .from("whatsapp_sessions")
           .update({
             status: "disconnected",
-            updated_at: new Date().toISOString(),
           })
-          .eq("session_id", sessionId)
+          .eq("id", sessionId)
 
-        // Remover cliente do Map
         this.clients.delete(sessionId)
         this.initializing.delete(sessionId)
 
@@ -212,22 +203,19 @@ class WhatsAppManager {
           const { data: session } = await supabase
             .from("whatsapp_sessions")
             .select("id, tenant_id")
-            .eq("session_id", sessionId)
+            .eq("id", sessionId)
             .single()
 
           if (!session) {
-            console.error(`[${sessionId}] Session not found in database`)
+            console.error(`[${sessionId}] Session not found`)
             return
           }
 
-          // Get or create contact
           const contact = await this.getOrCreateContact(msg, session.tenant_id)
 
-          // Prepare message data with correct column names
           const messageData = {
-            id: crypto.randomUUID(),
             tenant_id: session.tenant_id,
-            whatsapp_session_id: session.id, // Correct column name
+            whatsapp_session_id: session.id,
             contact_id: contact.id,
             from_me: msg.fromMe,
             body: msg.body || "",
@@ -235,10 +223,8 @@ class WhatsAppManager {
             media_type: null,
             timestamp: new Date(msg.timestamp * 1000).toISOString(),
             status: "received",
-            created_at: new Date().toISOString(),
           }
 
-          // Handle media if present
           if (msg.hasMedia) {
             try {
               const media = await msg.downloadMedia()
@@ -249,7 +235,6 @@ class WhatsAppManager {
             }
           }
 
-          // Save to database
           const { data: savedMessage, error: insertError } = await supabase
             .from("messages")
             .insert([messageData])
@@ -261,16 +246,14 @@ class WhatsAppManager {
             return
           }
 
-          console.log(`[${sessionId}] ✅ Message saved to database`)
+          console.log(`[${sessionId}] Message saved`)
 
-          // Emit via Socket.IO
           if (global.io) {
             global.io.to(sessionId).emit("whatsapp:message", {
               sessionId,
               message: savedMessage,
               contact,
             })
-            // Also emit globally for backward compatibility
             global.io.emit("message", savedMessage)
           }
         } catch (error) {
@@ -301,9 +284,8 @@ class WhatsAppManager {
         .from("whatsapp_sessions")
         .update({
           status: "error",
-          updated_at: new Date().toISOString(),
         })
-        .eq("session_id", sessionId)
+        .eq("id", sessionId)
 
       this.initializing.delete(sessionId)
       throw error
@@ -319,7 +301,7 @@ class WhatsAppManager {
     const { data: session } = await supabase
       .from("whatsapp_sessions")
       .select("id, tenant_id")
-      .eq("session_id", sessionId)
+      .eq("id", sessionId)
       .single()
 
     if (!session) {
@@ -337,37 +319,27 @@ class WhatsAppManager {
     const whatsappId = msg.from
     const phoneNumber = whatsappId.split("@")[0]
 
-    let { data: contactData, error: contactError } = await supabase
+    let { data: contactData } = await supabase
       .from("contacts")
       .select("*")
       .eq("phone", phoneNumber)
       .eq("tenant_id", tenantId)
       .single()
 
-    if (contactError || !contactData) {
-      const { data: newContactData, error: newContactError } = await supabase
+    if (!contactData) {
+      const { data: newContactData } = await supabase
         .from("contacts")
         .insert([
           {
-            id: crypto.randomUUID(),
             tenant_id: tenantId,
-            name: phoneNumber, // Will be updated when we get pushname
+            name: phoneNumber,
             phone: phoneNumber,
-            avatar_url: null,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
           },
         ])
         .select()
         .single()
 
-      if (newContactError) {
-        console.error(`Error creating contact:`, newContactError)
-        throw newContactError
-      }
-
       contactData = newContactData
-      console.log(`New contact created: ${contactData.name}`)
     }
 
     return contactData
@@ -475,9 +447,8 @@ class WhatsAppManager {
       .from("whatsapp_sessions")
       .update({
         status: "disconnected",
-        updated_at: new Date().toISOString(),
       })
-      .eq("session_id", sessionId)
+      .eq("id", sessionId)
   }
 
   /**
@@ -590,14 +561,12 @@ class WhatsAppManager {
 
       console.log(`[${session.tenant_id}] ✅ Message saved to database`)
 
-      // Emit via Socket.IO
       if (global.io) {
         global.io.to(session.id).emit("whatsapp:message", {
           sessionId: session.id,
           message: savedMessage,
           contact,
         })
-        // Also emit globally for backward compatibility
         global.io.emit("message", savedMessage)
       }
     } catch (error) {
