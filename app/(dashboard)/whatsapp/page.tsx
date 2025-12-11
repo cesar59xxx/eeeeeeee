@@ -65,6 +65,7 @@ export default function WhatsAppPage() {
   const [isCreating, setIsCreating] = useState(false)
   const [socket, setSocket] = useState<Socket | null>(null)
   const [authToken, setAuthToken] = useState<string | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
 
   const supabase = createClient()
 
@@ -73,9 +74,10 @@ export default function WhatsAppPage() {
       const {
         data: { session },
       } = await supabase.auth.getSession()
-      if (session?.access_token) {
+      if (session?.access_token && session?.user?.id) {
         setAuthToken(session.access_token)
-        console.log("[v0] Auth token obtained")
+        setUserId(session.user.id)
+        console.log("[v0] Auth token and user ID obtained")
       } else {
         console.warn("[v0] No auth session found")
       }
@@ -85,12 +87,26 @@ export default function WhatsAppPage() {
 
   const authenticatedFetch = useCallback(
     async (url: string, options: RequestInit = {}) => {
-      if (!authToken) {
+      if (!authToken || !userId) {
         throw new Error("Not authenticated")
+      }
+
+      let body = options.body
+      if (body && typeof body === "string") {
+        try {
+          const parsed = JSON.parse(body)
+          if (!parsed.user_id) {
+            parsed.user_id = userId
+            body = JSON.stringify(parsed)
+          }
+        } catch (e) {
+          // Not JSON, ignore
+        }
       }
 
       const response = await fetch(`${API_URL}${url}`, {
         ...options,
+        body,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${authToken}`,
@@ -105,17 +121,17 @@ export default function WhatsAppPage() {
 
       return response.json()
     },
-    [authToken],
+    [authToken, userId],
   )
 
   const loadSessions = useCallback(async () => {
-    if (!authToken) return
+    if (!authToken || !userId) return
 
     try {
       setIsLoading(true)
       console.log("[v0] Loading sessions with auth...")
 
-      const data = await authenticatedFetch("/api/whatsapp/sessions")
+      const data = await authenticatedFetch(`/api/whatsapp/sessions?user_id=${userId}`)
       const rawSessions = data?.sessions || []
 
       const normalized: Session[] = rawSessions.map((s: any) => ({
@@ -136,11 +152,9 @@ export default function WhatsAppPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [authToken, authenticatedFetch])
+  }, [authToken, userId, authenticatedFetch])
 
   useEffect(() => {
-    if (!authToken) return
-
     console.log("[v0] Connecting to WebSocket:", WS_URL)
     const newSocket = io(WS_URL, {
       transports: ["websocket", "polling"],
@@ -193,18 +207,16 @@ export default function WhatsAppPage() {
   }, [authToken, qrSessionId, loadSessions])
 
   useEffect(() => {
-    if (!authToken) return
+    if (!authToken || !userId) return
 
-    // Initial load
     loadSessions()
 
-    // Poll every 30 seconds
     const interval = setInterval(() => {
       loadSessions()
     }, 30000)
 
     return () => clearInterval(interval)
-  }, [authToken, loadSessions])
+  }, [authToken, userId, loadSessions])
 
   useEffect(() => {
     if (socket && selectedSessionId) {
@@ -226,11 +238,11 @@ export default function WhatsAppPage() {
     setError(null)
 
     try {
-      console.log("[v0] Creating session:", name)
+      console.log("[v0] Creating session:", name, "for user:", userId)
 
       const data = await authenticatedFetch("/api/whatsapp/sessions", {
         method: "POST",
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, user_id: userId }),
       })
 
       if (!data.success || !data.session?.id) {
@@ -243,7 +255,6 @@ export default function WhatsAppPage() {
       setCreateDialogOpen(false)
       await loadSessions()
 
-      // Auto-start
       await handleStartSession(data.session.id)
     } catch (error: any) {
       console.error("[v0] Error:", error)
@@ -304,7 +315,6 @@ export default function WhatsAppPage() {
       })
 
       setNewMessage("")
-      // Recarregar mensagens
       loadMessages(selectedSessionId, selectedContact.id)
     } catch (error: any) {
       console.error("[v0] Error:", error)
@@ -363,7 +373,7 @@ export default function WhatsAppPage() {
     )
   }
 
-  if (!authToken) {
+  if (!authToken || !userId) {
     return (
       <Alert variant="destructive">
         <AlertCircle className="h-4 w-4" />
@@ -374,7 +384,6 @@ export default function WhatsAppPage() {
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-4 gap-6 h-[calc(100vh-8rem)]">
-      {/* Column 1: Sessions */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-bold">Instâncias</h2>
@@ -442,7 +451,6 @@ export default function WhatsAppPage() {
         </ScrollArea>
       </div>
 
-      {/* Column 2: Contacts */}
       <div className="space-y-4">
         <h2 className="text-xl font-bold">Conversas</h2>
         {selectedSessionId ? (
@@ -482,7 +490,6 @@ export default function WhatsAppPage() {
         )}
       </div>
 
-      {/* Columns 3-4: Chat */}
       <div className="md:col-span-2">
         {selectedContact ? (
           <Card className="h-full flex flex-col">
@@ -526,7 +533,6 @@ export default function WhatsAppPage() {
         )}
       </div>
 
-      {/* Create Session Dialog */}
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -555,7 +561,6 @@ export default function WhatsAppPage() {
         </DialogContent>
       </Dialog>
 
-      {/* QR Code Dialog */}
       <Dialog open={qrDialogOpen} onOpenChange={setQrDialogOpen}>
         <DialogContent>
           <DialogHeader>
