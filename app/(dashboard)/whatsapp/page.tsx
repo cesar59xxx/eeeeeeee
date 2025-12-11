@@ -68,20 +68,12 @@ export default function WhatsAppPage() {
 
       const normalizedSessions: Session[] = (rawSessions as any[])
         .map((s) => {
-          // Try multiple possible ID fields
-          const id = s.id || s.sessionId || s.session || s.instanceId || s.instance || null
-
-          // Try multiple possible name fields
-          const name = s.name || s.sessionName || s.phone_number || s.phone || s.session || id || "Unnamed"
-
-          const status = s.status || s.connectionStatus || s.state || "disconnected"
-
-          const phone = s.phone || s.phone_number || s.number || undefined
-
-          const isConnected =
-            status === "connected" || status === "ready" || status === "WORKING" || status === "CONNECTED"
-
-          const qrCode = s.qr || s.qrCode || s.qr_code || undefined
+          const id = s.id
+          const name = s.name || s.phone_number || "Unnamed"
+          const status = s.status || "disconnected"
+          const phone = s.phone_number || undefined
+          const isConnected = status === "connected" || status === "ready"
+          const qrCode = s.qr_code || undefined
 
           if (!id) {
             console.error("[v0] WARNING: Session without valid ID:", s)
@@ -371,81 +363,44 @@ export default function WhatsAppPage() {
   }
 
   const handleCreateSession = async () => {
-    if (!newSessionName.trim()) {
-      setError("O nome da sessão é obrigatório")
+    if (!newSessionName || newSessionName.trim() === "") {
+      setError("Nome da sessão é obrigatório")
       return
     }
 
+    setIsCreating(true)
+    setError(null)
+
     try {
-      setIsCreating(true)
-      setError(null)
+      console.log("[v0] Creating session with name:", newSessionName)
 
-      const sessionName = newSessionName.trim()
-      console.log("[v0] ========== CREATING SESSION ==========")
-      console.log("[v0] Session name (input):", sessionName)
+      const response = await apiClient.createSession({
+        name: newSessionName,
+      })
 
-      const response = await apiClient.createSession({ name: sessionName })
-      console.log("[v0] Raw API response (createSession):", JSON.stringify(response, null, 2))
+      console.log("[v0] Create session response:", response)
 
-      if (!response) {
-        throw new Error("Resposta vazia do servidor ao criar sessão")
+      if (!response || !response.success) {
+        throw new Error(response?.error || "Falha ao criar sessão")
       }
 
-      if (response.success === false) {
-        throw new Error(response.error || response.message || "Falha ao criar sessão")
+      if (!response.session || !response.session.id) {
+        console.error("[v0] ERROR: Invalid response structure:", response)
+        throw new Error("Sessão criada mas ID não foi retornado")
       }
 
-      // Try to find session data in various possible response structures
-      const sessionPayload = response.session || response.data || response.result || response
-
-      if (!sessionPayload) {
-        console.error("[v0] ERROR: Response missing session object:", response)
-        throw new Error("Resposta inválida: sessão não encontrada no payload")
-      }
-
-      // Try multiple possible ID fields
-      const sessionId =
-        sessionPayload.id ||
-        sessionPayload.sessionId ||
-        sessionPayload.session ||
-        sessionPayload.instanceId ||
-        sessionPayload.instance
-
-      if (!sessionId) {
-        console.error("[v0] ERROR: Session missing ID field:", sessionPayload)
-        throw new Error("Resposta inválida: ID da sessão não encontrado")
-      }
-
-      const sessionNameFromApi =
-        sessionPayload.name ||
-        sessionPayload.sessionName ||
-        sessionPayload.phone_number ||
-        sessionPayload.phone ||
-        sessionPayload.session ||
-        sessionName
-
-      console.log("[v0] ✅ Session created successfully!")
-      console.log("[v0] Session ID:", sessionId)
-      console.log("[v0] Session name (API):", sessionNameFromApi)
+      const sessionId = response.session.id
+      console.log("[v0] ✅ Session created with ID:", sessionId)
 
       setNewSessionName("")
       setCreateDialogOpen(false)
 
-      // Reload sessions to get the updated list
       await loadSessions()
 
-      const cleanId = String(sessionId)
-      setSelectedSessionId(cleanId)
-      setQrDialogOpen(true)
-
-      console.log("[v0] Auto-starting session...")
-      await apiClient.startSession(cleanId)
-      startQRPolling(cleanId)
-      console.log("[v0] ========== SESSION CREATION COMPLETE ==========")
+      console.log("[v0] Auto-starting session:", sessionId)
+      await handleStartSession(sessionId)
     } catch (error: any) {
-      console.error("[v0] ========== ERROR CREATING SESSION ==========")
-      console.error("[v0] Error:", error)
-      console.error("[v0] Error message:", error.message)
+      console.error("[v0] Error creating session:", error)
       setError(error.message || "Erro ao criar sessão")
     } finally {
       setIsCreating(false)

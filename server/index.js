@@ -309,7 +309,7 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
     console.log("[v0] Step 1: Looking for default tenant...")
     const { data: existingTenants, error: tenantQueryError } = await supabase
       .from("tenants")
-      .select("id")
+      .select("id, name, email")
       .eq("email", "default@system.local")
       .limit(1)
 
@@ -349,11 +349,12 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       console.log("[v0] ✅ Created new tenant:", tenantId)
     }
 
-    console.log("[v0] Step 2: Creating WhatsApp session...")
+    console.log("[v0] Step 2: Creating WhatsApp session in database...")
     const sessionInsertData = {
       tenant_id: tenantId,
-      phone_number: trimmedName,
+      name: trimmedName,
       status: "qr",
+      is_active: true,
     }
 
     console.log("[v0] Insert data:", JSON.stringify(sessionInsertData))
@@ -361,7 +362,7 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
     const { data: createdSession, error: sessionCreateError } = await supabase
       .from("whatsapp_sessions")
       .insert(sessionInsertData)
-      .select("id, tenant_id, phone_number, status")
+      .select("id, tenant_id, name, status, is_active")
       .single()
 
     if (sessionCreateError || !createdSession) {
@@ -375,19 +376,18 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
 
     console.log("[v0] ✅ Session created in database")
     console.log("[v0] Session ID:", createdSession.id)
-    console.log("[v0] Session phone_number:", createdSession.phone_number)
+    console.log("[v0] Session name:", createdSession.name)
 
     const responseData = {
       success: true,
       session: {
         id: createdSession.id,
-        name: createdSession.phone_number,
+        name: createdSession.name,
         status: createdSession.status,
-        phone: createdSession.phone_number,
         tenant_id: createdSession.tenant_id,
         isConnected: false,
       },
-      message: "Session created successfully",
+      message: "Session created successfully. Call /start to initialize WhatsApp.",
     }
 
     console.log("[v0] ✅ Sending response:", JSON.stringify(responseData, null, 2))
@@ -445,7 +445,7 @@ app.post("/api/whatsapp/sessions/:id/start", async (req, res) => {
     }
 
     const session = sessions[0]
-    console.log("[v0] ✅ Found session:", session.phone_number)
+    console.log("[v0] ✅ Found session:", session.name || session.id)
 
     const { error: updateError } = await supabase
       .from("whatsapp_sessions")
@@ -456,14 +456,20 @@ app.post("/api/whatsapp/sessions/:id/start", async (req, res) => {
       console.error("[v0] ERROR: Failed to update session status:", updateError)
     }
 
-    console.log("[v0] Initializing WhatsApp client...")
+    console.log("[v0] Initializing WhatsApp client asynchronously...")
     setImmediate(async () => {
       try {
-        await whatsappManager.createSession(id, session.tenant_id)
-        console.log("[v0] ✅ WhatsApp client initialized")
+        await whatsappManager.initializeSession(id)
+        console.log("[v0] ✅ WhatsApp client initialized successfully")
       } catch (error) {
         console.error("[v0] ERROR initializing WhatsApp:", error)
-        await supabase.from("whatsapp_sessions").update({ status: "error" }).eq("id", id)
+        await supabase
+          .from("whatsapp_sessions")
+          .update({
+            status: "error",
+            error_message: error.message,
+          })
+          .eq("id", id)
       }
     })
 
@@ -472,7 +478,7 @@ app.post("/api/whatsapp/sessions/:id/start", async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: "Session initialization started",
+      message: "Session initialization started. QR code will be emitted via WebSocket.",
       sessionId: id,
     })
   } catch (error) {

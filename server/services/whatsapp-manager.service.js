@@ -322,7 +322,7 @@ class WhatsAppManager {
     let { data: contactData } = await supabase
       .from("contacts")
       .select("*")
-      .eq("phone", phoneNumber)
+      .eq("whatsapp_number", phoneNumber)
       .eq("tenant_id", tenantId)
       .single()
 
@@ -333,7 +333,7 @@ class WhatsAppManager {
           {
             tenant_id: tenantId,
             name: phoneNumber,
-            phone: phoneNumber,
+            whatsapp_number: phoneNumber,
           },
         ])
         .select()
@@ -516,38 +516,32 @@ class WhatsAppManager {
    */
   async handleMessage(msg, session) {
     try {
-      console.log(`[${session.tenant_id}] 📨 Message received from ${msg.from}`)
+      console.log(`[${session.id}] 📨 Message received from ${msg.from}`)
 
-      // Get or create contact
       const contact = await this.getOrCreateContact(msg, session.tenant_id)
 
-      // Prepare message data with correct column names
       const messageData = {
-        id: crypto.randomUUID(),
         tenant_id: session.tenant_id,
-        whatsapp_session_id: session.id, // Correct column name
+        whatsapp_session_id: session.id,
         contact_id: contact.id,
         from_me: msg.fromMe,
         body: msg.body || "",
         media_url: null,
         media_type: null,
-        timestamp: new Date(msg.timestamp * 1000).toISOString(),
+        timestamp: msg.timestamp ? new Date(msg.timestamp * 1000).toISOString() : new Date().toISOString(),
         status: "received",
-        created_at: new Date().toISOString(),
       }
 
-      // Handle media if present
       if (msg.hasMedia) {
         try {
           const media = await msg.downloadMedia()
           messageData.media_url = `data:${media.mimetype};base64,${media.data}`
           messageData.media_type = media.mimetype
         } catch (error) {
-          console.error(`[${session.tenant_id}] Error downloading media:`, error)
+          console.error(`[${session.id}] Error downloading media:`, error)
         }
       }
 
-      // Save to database
       const { data: savedMessage, error: insertError } = await supabase
         .from("messages")
         .insert([messageData])
@@ -555,11 +549,11 @@ class WhatsAppManager {
         .single()
 
       if (insertError) {
-        console.error(`[${session.tenant_id}] Error saving message:`, insertError)
+        console.error(`[${session.id}] Error saving message:`, insertError)
         return
       }
 
-      console.log(`[${session.tenant_id}] ✅ Message saved to database`)
+      console.log(`[${session.id}] ✅ Message saved to database`)
 
       if (global.io) {
         global.io.to(session.id).emit("whatsapp:message", {
@@ -570,7 +564,7 @@ class WhatsAppManager {
         global.io.emit("message", savedMessage)
       }
     } catch (error) {
-      console.error(`[${session.tenant_id}] Error handling message:`, error)
+      console.error(`[${session.id}] Error handling message:`, error)
     }
   }
 }
