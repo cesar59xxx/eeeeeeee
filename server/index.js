@@ -290,61 +290,51 @@ app.get("/api/whatsapp/sessions", async (req, res) => {
 
 app.post("/api/whatsapp/sessions", async (req, res) => {
   try {
-    const { name, tenantId } = req.body
+    console.log("[v0] Creating session:", req.body)
+    const { name } = req.body
 
-    if (!name) {
+    if (!name || name.trim() === "") {
       return res.status(400).json({
         error: true,
         message: "Name is required",
       })
     }
 
-    let finalTenantId = tenantId
+    // Get or create default tenant
+    const { data: tenants } = await supabase.from("tenants").select("id").eq("email", "default@system.local").limit(1)
 
-    if (!finalTenantId) {
-      const { data: defaultTenant } = await supabase.from("tenants").select("id").eq("name", "default").single()
+    let tenantId
 
-      if (defaultTenant) {
-        finalTenantId = defaultTenant.id
-      } else {
-        const { data: newTenant } = await supabase
-          .from("tenants")
-          .insert([{ name: "default", email: "default@system.local" }])
-          .select("id")
-          .single()
+    if (tenants && tenants.length > 0) {
+      tenantId = tenants[0].id
+      console.log("[v0] Using existing tenant:", tenantId)
+    } else {
+      const { data: newTenant, error: tenantError } = await supabase
+        .from("tenants")
+        .insert([{ name: "Default", email: "default@system.local" }])
+        .select("id")
+        .single()
 
-        finalTenantId = newTenant.id
+      if (tenantError) {
+        console.error("[v0] Failed to create tenant:", tenantError)
+        return res.status(500).json({
+          error: true,
+          message: "Failed to create tenant",
+        })
       }
+
+      tenantId = newTenant.id
+      console.log("[v0] Created new tenant:", tenantId)
     }
 
-    const { data: existing } = await supabase
-      .from("whatsapp_sessions")
-      .select("*")
-      .eq("tenant_id", finalTenantId)
-      .ilike("phone_number", `%${name}%`)
-      .single()
-
-    if (existing) {
-      return res.json({
-        success: true,
-        session: {
-          id: existing.id,
-          name: existing.phone_number || name,
-          status: existing.status,
-          phone: existing.phone_number,
-          qrCode: existing.qr_code,
-        },
-        message: "Session already exists",
-      })
-    }
-
+    // Create new session
     const { data: newSession, error: insertError } = await supabase
       .from("whatsapp_sessions")
       .insert([
         {
-          tenant_id: finalTenantId,
-          phone_number: name,
-          status: "pending",
+          tenant_id: tenantId,
+          phone_number: name.trim(),
+          status: "qr",
           qr_code: null,
         },
       ])
@@ -352,13 +342,15 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       .single()
 
     if (insertError) {
-      console.error("[v0] Insert error:", insertError)
+      console.error("[v0] Failed to create session:", insertError)
       return res.status(500).json({
         error: true,
         message: "Failed to create session",
         details: insertError.message,
       })
     }
+
+    console.log("[v0] Session created successfully:", newSession.id)
 
     res.json({
       success: true,
@@ -370,10 +362,10 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       },
     })
   } catch (error) {
-    console.error("[v0] Error:", error)
+    console.error("[v0] Unexpected error:", error)
     res.status(500).json({
       error: true,
-      message: "Failed to create session",
+      message: error.message || "Failed to create session",
     })
   }
 })
