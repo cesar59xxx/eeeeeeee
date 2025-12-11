@@ -8,15 +8,11 @@ import { usePathname, useRouter } from "next/navigation"
 import { useAuthStore } from "@/lib/stores/auth-store"
 import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "@/components/theme-toggle"
-import { MessageSquare, Users, Phone, Bot, Settings, LogOut, Menu, X, BarChart3, Tag } from "lucide-react"
+import { MessageSquare, Phone, Settings, LogOut, Menu, X, BarChart3 } from "lucide-react"
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: BarChart3 },
-  { name: "Inbox", href: "/inbox", icon: MessageSquare },
-  { name: "Contatos", href: "/contacts", icon: Users },
-  { name: "Pipeline", href: "/pipeline", icon: Tag },
   { name: "WhatsApp", href: "/whatsapp", icon: Phone },
-  { name: "Chatbots", href: "/chatbots", icon: Bot },
   { name: "Configurações", href: "/settings", icon: Settings },
 ]
 
