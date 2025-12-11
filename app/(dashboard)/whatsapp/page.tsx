@@ -243,23 +243,37 @@ export default function WhatsAppPage() {
       setIsCreating(true)
       setError(null)
 
+      console.log("[v0] Creating session with name:", newSessionName)
+
       const response = await apiClient.createSession({
         name: newSessionName,
       })
 
-      if (response.success) {
-        setNewSessionName("")
-        setCreateDialogOpen(false)
-        await loadSessions()
+      console.log("[v0] Create session response:", response)
 
-        const sessionId = response.session.id
-        await apiClient.startSession(sessionId)
-
-        setQrDialogOpen(true)
-        setSelectedSessionId(sessionId)
-        startQRPolling(sessionId)
+      if (!response.success || !response.session || !response.session.id) {
+        throw new Error(response.message || "Session creation failed - invalid response")
       }
+
+      const sessionId = response.session.id
+      console.log("[v0] Session created with ID:", sessionId)
+
+      setNewSessionName("")
+      setCreateDialogOpen(false)
+
+      await loadSessions()
+
+      console.log("[v0] Auto-starting session:", sessionId)
+      setSelectedSessionId(sessionId)
+      setQrDialogOpen(true)
+
+      await apiClient.startSession(sessionId)
+
+      startQRPolling(sessionId)
+
+      console.log("[v0] Session creation flow completed successfully")
     } catch (error: any) {
+      console.error("[v0] Error creating session:", error)
       setError(error.message || "Failed to create session")
     } finally {
       setIsCreating(false)
