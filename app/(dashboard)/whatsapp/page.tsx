@@ -54,12 +54,23 @@ export default function WhatsAppPage() {
   const [isCreating, setIsCreating] = useState(false)
 
   const handleStartSession = async (sessionId: string) => {
+    if (!sessionId || sessionId === "undefined") {
+      console.error("[v0] ERROR: Cannot start session with invalid ID:", sessionId)
+      alert("Erro: ID da sessão inválido")
+      return
+    }
+
     try {
+      console.log("[v0] Starting session:", sessionId)
+
       await apiClient.startSession(sessionId)
+
       setQrDialogOpen(true)
       startQRPolling(sessionId)
+
+      console.log("[v0] ✅ Session start initiated")
     } catch (error: any) {
-      console.error("[v0] Error starting session:", error)
+      console.error("[v0] ERROR starting session:", error)
       alert(error.message || "Erro ao iniciar sessão")
     }
   }
@@ -235,7 +246,7 @@ export default function WhatsAppPage() {
 
   const handleCreateSession = async () => {
     if (!newSessionName.trim()) {
-      setError("Session name is required")
+      setError("O nome da sessão é obrigatório")
       return
     }
 
@@ -243,38 +254,49 @@ export default function WhatsAppPage() {
       setIsCreating(true)
       setError(null)
 
-      console.log("[v0] Creating session with name:", newSessionName)
+      const sessionName = newSessionName.trim()
+      console.log("[v0] Creating session with name:", sessionName)
 
       const response = await apiClient.createSession({
-        name: newSessionName,
+        name: sessionName,
       })
 
       console.log("[v0] Create session response:", response)
 
-      if (!response.success || !response.session || !response.session.id) {
-        throw new Error(response.message || "Session creation failed - invalid response")
+      if (!response || !response.success) {
+        throw new Error(response?.error || "Falha ao criar sessão - resposta inválida")
+      }
+
+      if (!response.session || !response.session.id) {
+        console.error("[v0] ERROR: Invalid response structure:", response)
+        throw new Error("Sessão criada mas ID não foi retornado")
       }
 
       const sessionId = response.session.id
-      console.log("[v0] Session created with ID:", sessionId)
+      const sessionNameFromResponse = response.session.name || sessionName
+
+      console.log("[v0] ✅ Session created successfully")
+      console.log("[v0] Session ID:", sessionId)
+      console.log("[v0] Session name:", sessionNameFromResponse)
 
       setNewSessionName("")
       setCreateDialogOpen(false)
 
       await loadSessions()
 
-      console.log("[v0] Auto-starting session:", sessionId)
       setSelectedSessionId(sessionId)
       setQrDialogOpen(true)
+
+      console.log("[v0] Starting session automatically...")
 
       await apiClient.startSession(sessionId)
 
       startQRPolling(sessionId)
 
-      console.log("[v0] Session creation flow completed successfully")
+      console.log("[v0] ✅ Session creation and start completed successfully")
     } catch (error: any) {
-      console.error("[v0] Error creating session:", error)
-      setError(error.message || "Failed to create session")
+      console.error("[v0] ERROR creating session:", error)
+      setError(error.message || "Erro ao criar sessão")
     } finally {
       setIsCreating(false)
     }
@@ -579,16 +601,40 @@ export default function WhatsAppPage() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <Input
-              placeholder="Ex: Atendimento Principal"
+              placeholder="Ex: Vendas, Suporte, Marketing..."
               value={newSessionName}
               onChange={(e) => setNewSessionName(e.target.value)}
               onKeyPress={(e) => {
-                if (e.key === "Enter") handleCreateSession()
+                if (e.key === "Enter" && !isCreating) {
+                  handleCreateSession()
+                }
               }}
+              disabled={isCreating}
+              autoFocus
             />
-            {error && <p className="text-red-500 text-sm">{error}</p>}
-            <Button onClick={handleCreateSession} className="w-full" disabled={isCreating || !newSessionName.trim()}>
-              Criar Sessão
+            {error && <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-md">{error}</div>}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCreateDialogOpen(false)
+                setError(null)
+                setNewSessionName("")
+              }}
+              disabled={isCreating}
+            >
+              Cancelar
+            </Button>
+            <Button onClick={handleCreateSession} disabled={isCreating || !newSessionName.trim()}>
+              {isCreating ? (
+                <>
+                  <span className="animate-spin mr-2">⏳</span>
+                  Criando...
+                </>
+              ) : (
+                "Criar Sessão"
+              )}
             </Button>
           </div>
         </DialogContent>

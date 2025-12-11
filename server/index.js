@@ -296,10 +296,10 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
     const { name } = req.body
 
     if (!name || typeof name !== "string" || name.trim() === "") {
-      console.log("[v0] ERROR: Invalid name provided")
+      console.log("[v0] ERROR: Invalid or missing name")
       return res.status(400).json({
-        error: true,
-        message: "Name is required and must be a non-empty string",
+        success: false,
+        error: "Name is required and must be a non-empty string",
       })
     }
 
@@ -311,13 +311,13 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       .from("tenants")
       .select("id")
       .eq("email", "default@system.local")
+      .limit(1)
 
     if (tenantQueryError) {
       console.error("[v0] ERROR: Failed to query tenants:", tenantQueryError)
       return res.status(500).json({
-        error: true,
-        message: "Database error",
-        details: tenantQueryError.message,
+        success: false,
+        error: "Database error querying tenants",
       })
     }
 
@@ -335,25 +335,17 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
           email: "default@system.local",
         })
         .select("id")
+        .single()
 
-      if (tenantCreateError) {
+      if (tenantCreateError || !newTenant) {
         console.error("[v0] ERROR: Failed to create tenant:", tenantCreateError)
         return res.status(500).json({
-          error: true,
-          message: "Failed to create tenant",
-          details: tenantCreateError.message,
+          success: false,
+          error: "Failed to create tenant",
         })
       }
 
-      if (!newTenant || newTenant.length === 0) {
-        console.error("[v0] ERROR: Tenant insert returned no data")
-        return res.status(500).json({
-          error: true,
-          message: "Tenant creation failed - no data returned",
-        })
-      }
-
-      tenantId = newTenant[0].id
+      tenantId = newTenant.id
       console.log("[v0] ✅ Created new tenant:", tenantId)
     }
 
@@ -370,51 +362,36 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
       .from("whatsapp_sessions")
       .insert(sessionInsertData)
       .select("id, tenant_id, phone_number, status, qr_code")
+      .single()
 
-    if (sessionCreateError) {
+    if (sessionCreateError || !createdSession) {
       console.error("[v0] ERROR: Failed to create session:", sessionCreateError)
-      console.error("[v0] ERROR details:", JSON.stringify(sessionCreateError))
       return res.status(500).json({
-        error: true,
-        message: "Failed to create WhatsApp session",
-        details: sessionCreateError.message,
-        code: sessionCreateError.code,
+        success: false,
+        error: "Failed to create WhatsApp session",
+        details: sessionCreateError?.message,
       })
     }
 
-    if (!createdSession || createdSession.length === 0) {
-      console.error("[v0] ERROR: Session insert returned no data")
-      return res.status(500).json({
-        error: true,
-        message: "Session creation failed - no data returned",
-      })
-    }
-
-    const session = createdSession[0]
-    console.log("[v0] ✅ Session created with ID:", session.id)
-
-    console.log("[v0] Step 3: Starting WhatsApp initialization (background)...")
-    setImmediate(() => {
-      whatsappManager.initializeSession(session.id).catch((error) => {
-        console.error("[v0] ERROR: WhatsApp initialization failed:", error)
-      })
-    })
+    console.log("[v0] ✅ Session created with ID:", createdSession.id)
 
     const responseData = {
       success: true,
       session: {
-        id: session.id,
-        name: session.phone_number,
-        status: session.status,
-        phone: session.phone_number,
-        tenant_id: session.tenant_id,
+        id: createdSession.id,
+        name: createdSession.phone_number, // Map phone_number to name for frontend
+        status: createdSession.status,
+        phone: createdSession.phone_number,
+        tenant_id: createdSession.tenant_id,
+        isConnected: false,
       },
+      message: "Session created successfully",
     }
 
-    console.log("[v0] ✅ Sending success response")
+    console.log("[v0] ✅ Sending success response with session ID:", createdSession.id)
     console.log("[v0] ========================================")
 
-    return res.status(200).json(responseData)
+    return res.status(201).json(responseData)
   } catch (error) {
     console.error("[v0] ========== UNEXPECTED ERROR ==========")
     console.error("[v0] ERROR:", error.message)
@@ -422,8 +399,8 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
     console.error("[v0] =======================================")
 
     return res.status(500).json({
-      error: true,
-      message: "Unexpected server error",
+      success: false,
+      error: "Unexpected server error",
       details: error.message,
     })
   }
@@ -432,17 +409,17 @@ app.post("/api/whatsapp/sessions", async (req, res) => {
 app.post("/api/whatsapp/sessions/:id/start", async (req, res) => {
   try {
     const { id } = req.params
-    console.log("[v0] POST /api/whatsapp/sessions/:id/start - Session ID:", id)
+    console.log("[v0] ========== START SESSION ==========")
+    console.log("[v0] Session ID:", id)
 
-    if (!id || id === "undefined") {
-      console.error("[v0] Invalid session ID:", id)
+    if (!id || id === "undefined" || id === "null" || id.trim() === "") {
+      console.error("[v0] ERROR: Invalid or missing session ID")
       return res.status(400).json({
-        error: true,
-        message: "Invalid session ID",
+        success: false,
+        error: "Valid session ID is required",
       })
     }
 
-    // Verify session exists
     const { data: sessions, error: fetchError } = await supabase
       .from("whatsapp_sessions")
       .select("*")
@@ -450,44 +427,53 @@ app.post("/api/whatsapp/sessions/:id/start", async (req, res) => {
       .limit(1)
 
     if (fetchError) {
-      console.error("[v0] Error fetching session:", fetchError)
+      console.error("[v0] ERROR: Database error:", fetchError)
       return res.status(500).json({
-        error: true,
-        message: "Database error",
-        details: fetchError.message,
+        success: false,
+        error: "Database error",
       })
     }
 
     if (!sessions || sessions.length === 0) {
-      console.error("[v0] Session not found:", id)
+      console.error("[v0] ERROR: Session not found:", id)
       return res.status(404).json({
-        error: true,
-        message: "Session not found",
+        success: false,
+        error: "Session not found",
       })
     }
 
     const session = sessions[0]
-    console.log("[v0] Found session:", session)
+    console.log("[v0] ✅ Found session:", session.phone_number)
 
-    // Update status
-    await supabase.from("whatsapp_sessions").update({ status: "initializing" }).eq("id", id)
+    const { error: updateError } = await supabase
+      .from("whatsapp_sessions")
+      .update({ status: "initializing" })
+      .eq("id", id)
 
-    // Initialize session
-    console.log("[v0] Initializing WhatsApp session...")
-    whatsappManager.initializeSession(id).catch((error) => {
-      console.error("[v0] Error initializing session:", error)
+    if (updateError) {
+      console.error("[v0] ERROR: Failed to update status:", updateError)
+    }
+
+    console.log("[v0] Starting WhatsApp initialization...")
+    setImmediate(() => {
+      whatsappManager.initializeSession(id).catch((error) => {
+        console.error("[v0] ERROR: WhatsApp initialization failed:", error)
+      })
     })
 
-    res.json({
+    console.log("[v0] ✅ Session start initiated")
+    console.log("[v0] =====================================")
+
+    return res.json({
       success: true,
       message: "Session initialization started",
       sessionId: id,
     })
   } catch (error) {
-    console.error("[v0] Error starting session:", error)
-    res.status(500).json({
-      error: true,
-      message: "Failed to start session",
+    console.error("[v0] ERROR starting session:", error)
+    return res.status(500).json({
+      success: false,
+      error: "Failed to start session",
       details: error.message,
     })
   }
