@@ -41,6 +41,18 @@ app.use("/api/", limiter)
 
 app.use("/api/whatsapp", authenticateUser)
 
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    message: "WhatsApp CRM Backend v3.0",
+    version: "3.0.0",
+    endpoints: {
+      health: "/health",
+      api: "/api/whatsapp",
+    },
+  })
+})
+
 app.get("/health", (req, res) => {
   res.json({ status: "ok", version: "3.0.0" })
 })
@@ -727,9 +739,14 @@ app.use((req, res) => {
   })
 })
 
-const PORT = process.env.PORT || 5000
+const PORT = process.env.PORT || 3001
+
 httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Server running on port ${PORT}`)
+  console.log(
+    `🌐 CORS enabled for:`,
+    ["http://localhost:3000", "https://eeeeeeee-eight.vercel.app", process.env.FRONTEND_URL].filter(Boolean),
+  )
 })
 
 export { io }
