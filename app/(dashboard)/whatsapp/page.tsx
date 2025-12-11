@@ -234,6 +234,11 @@ export default function WhatsAppPage() {
       return
     }
 
+    if (!userId) {
+      setError("Usuário não autenticado")
+      return
+    }
+
     setIsCreating(true)
     setError(null)
 
@@ -242,7 +247,10 @@ export default function WhatsAppPage() {
 
       const data = await authenticatedFetch("/api/whatsapp/sessions", {
         method: "POST",
-        body: JSON.stringify({ name, user_id: userId }),
+        body: JSON.stringify({
+          name: name,
+          user_id: userId,
+        }),
       })
 
       if (!data.success || !data.session?.id) {
