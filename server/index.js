@@ -249,17 +249,50 @@ app.get("/api/whatsapp/sessions", async (req, res) => {
 
     sessionRequestCache.set(cacheKey, now)
 
-    const { tenantId } = req.query
+    const authHeader = req.headers.authorization
+    let tenantId = null
+
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.substring(7)
+      try {
+        const {
+          data: { user },
+          error: authError,
+        } = await supabase.auth.getUser(token)
+
+        if (!authError && user) {
+          // Get tenant_id from user metadata or tenants table
+          const { data: tenant } = await supabase.from("tenants").select("id").eq("email", user.email).single()
+
+          if (tenant) {
+            tenantId = tenant.id
+            console.log("[v0] Found tenant for user:", user.email, "->", tenantId)
+          }
+        }
+      } catch (e) {
+        console.error("[v0] Error getting user from token:", e)
+      }
+    }
+
+    // If no tenant found from auth, try query param (fallback)
+    if (!tenantId && req.query.tenantId) {
+      tenantId = req.query.tenantId
+    }
+
+    console.log("[v0] Loading sessions for tenant:", tenantId || "ALL (no filter)")
 
     let query = supabase.from("whatsapp_sessions").select("*")
 
     if (tenantId) {
       query = query.eq("tenant_id", tenantId)
+    } else {
+      console.warn("[v0] ⚠️ Loading sessions without tenant filter - this shows all sessions!")
     }
 
     const { data: sessions, error } = await query
 
     if (error) {
+      console.error("[v0] Database error:", error)
       return res.status(500).json({
         error: true,
         message: "Failed to fetch sessions",
@@ -268,12 +301,14 @@ app.get("/api/whatsapp/sessions", async (req, res) => {
 
     const sessionsWithStatus = sessions.map((session) => ({
       id: session.id,
-      name: session.phone_number || "Unnamed",
+      name: session.name || "Unnamed",
       status: session.status,
       phone: session.phone_number,
       qrCode: session.qr_code,
       isConnected: whatsappManager.isSessionActive(session.id),
     }))
+
+    console.log("[v0] Returning", sessionsWithStatus.length, "sessions")
 
     res.json({
       success: true,
