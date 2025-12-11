@@ -32,6 +32,16 @@ class WhatsAppManager {
     try {
       console.log(`[${sessionId}] Inicializando sessão WhatsApp...`)
 
+      const { data: sessionData } = await supabase
+        .from("whatsapp_sessions")
+        .select("id, user_id, tenant_id")
+        .eq("id", sessionId)
+        .single()
+
+      if (!sessionData) {
+        throw new Error("Session not found")
+      }
+
       // Criar diretório de sessões se não existir
       const sessionsPath = process.env.SESSIONS_PATH || "./whatsapp-sessions"
       if (!fs.existsSync(sessionsPath)) {
@@ -90,10 +100,6 @@ class WhatsAppManager {
             .eq("id", sessionId)
 
           if (global.io) {
-            global.io.to(sessionId).emit("whatsapp:qr", {
-              sessionId,
-              qr,
-            })
             global.io.emit("whatsapp:qr", {
               sessionId,
               qr,
@@ -142,30 +148,36 @@ class WhatsAppManager {
         }
       })
 
-      // Cliente pronto
       client.on("ready", async () => {
         console.log(`[${sessionId}] ✅ Cliente pronto!`)
 
         const info = client.info
 
+        let profilePicUrl = null
+        try {
+          profilePicUrl = await client.getProfilePicUrl(info.wid._serialized)
+        } catch (error) {
+          console.log(`[${sessionId}] Não foi possível obter foto de perfil`)
+        }
+
         await supabase
           .from("whatsapp_sessions")
           .update({
             status: "connected",
-            phone_number: info.wid.user,
+            whatsapp_phone: info.wid.user,
+            whatsapp_name: info.pushname || info.wid.user,
+            profile_pic_url: profilePicUrl,
             qr_code: null,
+            is_active: true,
           })
           .eq("id", sessionId)
 
         if (global.io) {
-          global.io.to(sessionId).emit("whatsapp:status", {
-            sessionId,
-            status: "connected",
-            phoneNumber: info.wid.user,
-          })
-          global.io.emit("session-connected", {
+          global.io.emit("whatsapp:connected", {
             sessionId,
             phoneNumber: info.wid.user,
+            profileName: info.pushname,
+            profilePicUrl,
           })
         }
       })
@@ -174,12 +186,7 @@ class WhatsAppManager {
       client.on("disconnected", async (reason) => {
         console.log(`[${sessionId}] ⚠️ Desconectado:`, reason)
 
-        await supabase
-          .from("whatsapp_sessions")
-          .update({
-            status: "disconnected",
-          })
-          .eq("id", sessionId)
+        await supabase.from("whatsapp_sessions").update({ status: "disconnected" }).eq("id", sessionId)
 
         this.clients.delete(sessionId)
         this.initializing.delete(sessionId)
@@ -200,68 +207,52 @@ class WhatsAppManager {
         try {
           console.log(`[${sessionId}] 📨 Message received from ${msg.from}`)
 
-          const { data: session } = await supabase
-            .from("whatsapp_sessions")
-            .select("id, tenant_id")
-            .eq("id", sessionId)
-            .single()
+          const contact = await this.getOrCreateContact(sessionId, msg, sessionData.user_id)
 
-          if (!session) {
-            console.error(`[${sessionId}] Session not found`)
-            return
-          }
-
-          const contact = await this.getOrCreateContact(msg, session.tenant_id)
-
-          const messageData = {
-            tenant_id: session.tenant_id,
-            whatsapp_session_id: session.id,
-            contact_id: contact.id,
-            from_me: msg.fromMe,
-            body: msg.body || "",
-            media_url: null,
-            media_type: null,
-            timestamp: new Date(msg.timestamp * 1000).toISOString(),
-            status: "received",
-          }
+          const mediaUrl = null
+          let mediaType = null
 
           if (msg.hasMedia) {
             try {
               const media = await msg.downloadMedia()
-              messageData.media_url = `data:${media.mimetype};base64,${media.data}`
-              messageData.media_type = media.mimetype
+              mediaType = media.mimetype
             } catch (error) {
               console.error(`[${sessionId}] Error downloading media:`, error)
             }
           }
 
-          const { data: savedMessage, error: insertError } = await supabase
-            .from("messages")
-            .insert([messageData])
-            .select()
-            .single()
+          const { error } = await supabase.from("messages").insert([
+            {
+              user_id: sessionData.user_id,
+              session_id: sessionId,
+              contact_id: contact.id,
+              whatsapp_message_id: msg.id._serialized,
+              direction: msg.fromMe ? "outgoing" : "incoming",
+              body: msg.body || "",
+              media_url: mediaUrl,
+              type: mediaType || "text",
+              timestamp: new Date(msg.timestamp * 1000).toISOString(),
+              status: "received",
+            },
+          ])
 
-          if (insertError) {
-            console.error(`[${sessionId}] Error saving message:`, insertError)
+          if (error) {
+            console.error(`[${sessionId}] Error saving message:`, error)
             return
           }
 
-          console.log(`[${sessionId}] Message saved`)
+          await supabase.from("contacts").update({ last_message_at: new Date().toISOString() }).eq("id", contact.id)
 
           if (global.io) {
-            global.io.to(sessionId).emit("whatsapp:message", {
-              sessionId,
-              message: savedMessage,
-              contact,
-            })
-            global.io.emit("message", savedMessage)
+            global.io.emit("whatsapp:message", { sessionId, message: msg })
           }
+
+          await this.handleChatbotResponse(sessionId, contact, msg)
         } catch (error) {
           console.error(`[${sessionId}] Error handling message:`, error)
         }
       })
 
-      // Mudança de estado da mensagem
       client.on("message_ack", async (msg, ack) => {
         try {
           await this.handleMessageAck(msg, ack, sessionId)
@@ -284,6 +275,7 @@ class WhatsAppManager {
         .from("whatsapp_sessions")
         .update({
           status: "error",
+          error_message: error.message,
         })
         .eq("id", sessionId)
 
@@ -313,36 +305,50 @@ class WhatsAppManager {
   }
 
   /**
-   * Obter ou criar contato
+   * Obter ou criar contato com foto de perfil
    */
-  async getOrCreateContact(msg, tenantId) {
-    const whatsappId = msg.from
-    const phoneNumber = whatsappId.split("@")[0]
+  async getOrCreateContact(sessionId, msg, userId) {
+    const whatsappNumber = msg.from.split("@")[0]
 
-    let { data: contactData } = await supabase
+    let { data: contact } = await supabase
       .from("contacts")
       .select("*")
-      .eq("whatsapp_number", phoneNumber)
-      .eq("tenant_id", tenantId)
+      .eq("whatsapp_number", whatsappNumber)
+      .eq("user_id", userId)
+      .eq("session_id", sessionId)
       .single()
 
-    if (!contactData) {
-      const { data: newContactData } = await supabase
+    if (!contact) {
+      let profilePicUrl = null
+      try {
+        const client = this.clients.get(sessionId)
+        if (client) {
+          profilePicUrl = await client.getProfilePicUrl(msg.from)
+        }
+      } catch (error) {
+        console.log("Não foi possível obter foto de perfil")
+      }
+
+      const { data: newContact } = await supabase
         .from("contacts")
         .insert([
           {
-            tenant_id: tenantId,
-            name: phoneNumber,
-            whatsapp_number: phoneNumber,
+            user_id: userId,
+            session_id: sessionId,
+            name: whatsappNumber,
+            whatsapp_number: whatsappNumber,
+            phone_number: whatsappNumber,
+            profile_pic_url: profilePicUrl,
+            last_message_at: new Date().toISOString(),
           },
         ])
         .select()
         .single()
 
-      contactData = newContactData
+      contact = newContact
     }
 
-    return contactData
+    return contact
   }
 
   /**
@@ -518,53 +524,62 @@ class WhatsAppManager {
     try {
       console.log(`[${session.id}] 📨 Message received from ${msg.from}`)
 
-      const contact = await this.getOrCreateContact(msg, session.tenant_id)
+      const contact = await this.getOrCreateContact(session.id, msg, session.user_id)
 
       const messageData = {
         tenant_id: session.tenant_id,
         whatsapp_session_id: session.id,
         contact_id: contact.id,
-        from_me: msg.fromMe,
+        whatsapp_message_id: msg.id._serialized,
+        direction: msg.fromMe ? "outgoing" : "incoming",
         body: msg.body || "",
-        media_url: null,
-        media_type: null,
         timestamp: msg.timestamp ? new Date(msg.timestamp * 1000).toISOString() : new Date().toISOString(),
         status: "received",
       }
 
-      if (msg.hasMedia) {
-        try {
-          const media = await msg.downloadMedia()
-          messageData.media_url = `data:${media.mimetype};base64,${media.data}`
-          messageData.media_type = media.mimetype
-        } catch (error) {
-          console.error(`[${session.id}] Error downloading media:`, error)
-        }
-      }
+      const { error } = await supabase.from("messages").insert([messageData])
 
-      const { data: savedMessage, error: insertError } = await supabase
-        .from("messages")
-        .insert([messageData])
-        .select()
-        .single()
-
-      if (insertError) {
-        console.error(`[${session.id}] Error saving message:`, insertError)
+      if (error) {
+        console.error(`[${session.id}] Error saving message:`, error)
         return
       }
 
       console.log(`[${session.id}] ✅ Message saved to database`)
 
       if (global.io) {
-        global.io.to(session.id).emit("whatsapp:message", {
-          sessionId: session.id,
-          message: savedMessage,
-          contact,
-        })
-        global.io.emit("message", savedMessage)
+        global.io.emit("whatsapp:message", { sessionId: session.id, message: msg })
       }
     } catch (error) {
       console.error(`[${session.id}] Error handling message:`, error)
+    }
+  }
+
+  /**
+   * Processar resposta do chatbot
+   */
+  async handleChatbotResponse(sessionId, contact, msg) {
+    try {
+      const { data: flow } = await supabase
+        .from("chatbot_flows")
+        .select("*")
+        .eq("session_id", sessionId)
+        .eq("is_active", true)
+        .single()
+
+      if (!flow) {
+        return
+      }
+
+      await supabase.from("chatbot_logs").insert([
+        {
+          flow_id: flow.id,
+          contact_id: contact.id,
+          user_message: msg.body,
+          bot_response: "Resposta automática em desenvolvimento",
+        },
+      ])
+    } catch (error) {
+      console.error("Error handling chatbot:", error)
     }
   }
 }

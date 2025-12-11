@@ -8,12 +8,11 @@ import rateLimit from "express-rate-limit"
 import dotenv from "dotenv"
 import { whatsappManager } from "./services/whatsapp-manager.service.js"
 import { supabase } from "./config/supabase.js"
+import { authenticateUser, requireAuth } from "./middleware/auth.js"
 
 dotenv.config()
 
-console.log("🚀 WhatsApp CRM Backend iniciando...")
-console.log("📦 Node.js:", process.version)
-console.log("🌍 Ambiente:", process.env.NODE_ENV || "development")
+console.log("🚀 WhatsApp CRM Backend v3.0 iniciando...")
 
 const app = express()
 const httpServer = createServer(app)
@@ -21,206 +20,251 @@ const io = new Server(httpServer, {
   cors: {
     origin: process.env.FRONTEND_URL || "*",
     credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   },
 })
 
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-  }),
-)
-app.use(compression())
-app.use(cors())
-app.use(express.json())
-app.use(express.urlencoded({ extended: true, limit: "50mb" }))
+global.io = io
 
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-})
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }))
+app.use(compression())
+app.use(cors({ origin: process.env.FRONTEND_URL || "*", credentials: true }))
+app.use(express.json())
+app.use(express.urlencoded({ extended: true }))
+
+const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200 })
 app.use("/api/", limiter)
 
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`)
-  next()
-})
-
-const mockSessions = []
+app.use("/api/whatsapp", authenticateUser)
 
 app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-  })
+  res.json({ status: "ok", version: "3.0.0" })
 })
 
-app.get("/api/health", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-  })
-})
-
-app.get("/api/auth/me", (req, res) => {
-  console.log("[v0] GET /api/auth/me")
-  res.json({
-    user: {
-      id: "demo-user",
-      email: "cesar.mediotec@gmail.com",
-      name: "Demo User",
-      role: "admin",
-    },
-    message: "Auth funcionando - usuário demo",
-  })
-})
-
-app.post("/api/auth/login", (req, res) => {
-  console.log("[v0] POST /api/auth/login:", req.body)
-  const { email, password } = req.body
-
-  res.json({
-    success: true,
-    user: {
-      id: "demo-user",
-      email: email || "demo@example.com",
-      name: "Demo User",
-      role: "admin",
-    },
-    token: "demo-token-" + Date.now(),
-    message: "Login funcionando - auth será implementado em breve",
-  })
-})
-
-app.post("/api/auth/register", (req, res) => {
-  console.log("[v0] POST /api/auth/register:", req.body)
-  const { email, password, name } = req.body
-
-  res.status(201).json({
-    success: true,
-    user: {
-      id: "demo-user-" + Date.now(),
-      email,
-      name,
-      role: "user",
-    },
-    token: "demo-token-" + Date.now(),
-    message: "Registro funcionando - auth será implementado em breve",
-  })
-})
-
-app.post("/api/auth/logout", (req, res) => {
-  console.log("[v0] POST /api/auth/logout")
-  res.json({
-    success: true,
-    message: "Logout realizado com sucesso",
-  })
-})
-
-app.post("/api/auth/refresh", (req, res) => {
-  console.log("[v0] POST /api/auth/refresh")
-  res.json({
-    success: true,
-    token: "demo-token-refreshed-" + Date.now(),
-    message: "Token refresh funcionando",
-  })
-})
-
-app.get("/", (req, res) => {
-  res.json({
-    message: "WhatsApp CRM Backend API",
-    status: "running",
-    version: "2.0.0",
-    endpoints: {
-      health: "/health",
-      auth: "/api/auth/*",
-      sessions: "/api/whatsapp/sessions",
-      qr: "/api/whatsapp/sessions/:sessionId/qr",
-      disconnect: "/api/whatsapp/sessions/:sessionId/disconnect",
-      connect: "/api/whatsapp/sessions/:sessionId/connect",
-      sendMessage: "/api/whatsapp/send",
-      debugWhatsApp: "/api/debug/whatsapp",
-      testSupabase: "/api/test/supabase",
-      fetchMessages: "/api/messages/:sessionId",
-      sendMessageEndpoint: "/api/messages/send",
-      contacts: "/api/contacts",
-      sessionStatus: "/api/whatsapp/sessions/:id/status",
-      sessionContacts: "/api/whatsapp/sessions/:sessionId/contacts",
-      contactMessages: "/api/whatsapp/:sessionId/messages/:contactId",
-    },
-  })
-})
-
-app.get("/api/test/supabase", async (req, res) => {
+app.get("/api/whatsapp/sessions", requireAuth, async (req, res) => {
   try {
-    console.log("[v0] ========== TESTING SUPABASE ==========")
-    console.log("[v0] Supabase URL:", process.env.NEXT_PUBLIC_SUPABASE_URL)
-    console.log("[v0] Has Service Role Key:", !!process.env.SUPABASE_SERVICE_ROLE_KEY)
-    console.log("[v0] Key length:", process.env.SUPABASE_SERVICE_ROLE_KEY?.length)
+    console.log("[v0] GET /api/whatsapp/sessions - User:", req.user.id)
 
-    // Test simple query
-    const { data, error, count } = await supabase.from("whatsapp_sessions").select("*", { count: "exact" })
-
-    console.log("[v0] Query result:")
-    console.log("[v0] - Error:", JSON.stringify(error, null, 2))
-    console.log("[v0] - Data:", JSON.stringify(data, null, 2))
-    console.log("[v0] - Count:", count)
-    console.log("[v0] ==========================================")
-
-    res.json({
-      success: !error,
-      error: error,
-      data: data,
-      count: count,
-      config: {
-        hasUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
-        hasKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-        url: process.env.NEXT_PUBLIC_SUPABASE_URL?.substring(0, 50) + "...",
-      },
-    })
-  } catch (error) {
-    console.error("[v0] Test error:", error)
-    res.status(500).json({ error: error.message, stack: error.stack })
-  }
-})
-
-app.get("/api/contacts", async (req, res) => {
-  try {
-    const { sessionId, limit = 100 } = req.query
-
-    console.log("[v0] GET /api/contacts - sessionId:", sessionId, "limit:", limit)
-
-    const query = supabase
-      .from("contacts")
-      .select("*")
-      .order("last_interaction", { ascending: false })
-      .limit(Number(limit))
-
-    if (sessionId) {
-      // Filter by session_id if provided
-      const { data: messages } = await supabase
-        .from("messages")
-        .select("from_number, to_number")
-        .eq("session_id", sessionId)
-
-      const uniqueNumbers = new Set()
-      messages?.forEach((msg) => {
-        uniqueNumbers.add(msg.from_number)
-        uniqueNumbers.add(msg.to_number)
-      })
-
-      query.in("phone_number", Array.from(uniqueNumbers))
-    }
-
-    const { data: contacts, error } = await query
+    const { data: sessions, error } = await supabase
+      .from("whatsapp_sessions")
+      .select("id, session_name, whatsapp_phone, whatsapp_name, profile_pic_url, status, qr_code, is_active")
+      .eq("user_id", req.user.id)
+      .order("created_at", { ascending: false })
 
     if (error) throw error
 
+    const sessionsWithStatus = sessions.map((s) => ({
+      id: s.id,
+      name: s.session_name || "Sem nome",
+      phoneNumber: s.whatsapp_phone,
+      profileName: s.whatsapp_name,
+      profilePicUrl: s.profile_pic_url,
+      status: s.status,
+      isActive: s.is_active && whatsappManager.isSessionActive(s.id),
+      qrCode: s.qr_code,
+    }))
+
+    console.log(`[v0] Returning ${sessionsWithStatus.length} sessions for user ${req.user.id}`)
+
+    res.json({ success: true, sessions: sessionsWithStatus })
+  } catch (error) {
+    console.error("[v0] Error:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.get("/api/whatsapp/sessions/:sessionId/messages", requireAuth, async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    const { contactId } = req.query
+
+    console.log("[v0] GET messages for session:", sessionId, "contact:", contactId)
+
+    const { data: session } = await supabase
+      .from("whatsapp_sessions")
+      .select("id")
+      .eq("id", sessionId)
+      .eq("user_id", req.user.id)
+      .single()
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" })
+    }
+
+    let query = supabase
+      .from("messages")
+      .select("id, contact_id, direction, body, media_url, type, timestamp, status, created_at")
+      .eq("session_id", sessionId)
+      .eq("user_id", req.user.id)
+
+    if (contactId) {
+      query = query.eq("contact_id", contactId)
+    }
+
+    const { data: messages, error } = await query.order("timestamp", { ascending: true }).limit(100)
+
+    if (error) throw error
+
+    const normalizedMessages = messages.map((m) => ({
+      id: m.id,
+      contactId: m.contact_id,
+      fromMe: m.direction === "outgoing",
+      body: m.body,
+      mediaUrl: m.media_url,
+      mediaType: m.type,
+      timestamp: m.timestamp,
+      status: m.status,
+    }))
+
+    res.json({ success: true, messages: normalizedMessages })
+  } catch (error) {
+    console.error("[v0] Error:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.post("/api/whatsapp/sessions", requireAuth, async (req, res) => {
+  try {
+    const { name } = req.body
+    console.log("[v0] Creating session for user:", req.user.id, "name:", name)
+
+    if (!name) {
+      return res.status(400).json({ success: false, error: "Name is required" })
+    }
+
+    const { data: session, error } = await supabase
+      .from("whatsapp_sessions")
+      .insert([
+        {
+          user_id: req.user.id,
+          session_name: name,
+          status: "disconnected",
+          is_active: false,
+        },
+      ])
+      .select()
+      .single()
+
+    if (error) throw error
+
+    console.log("[v0] ✅ Session created:", session.id)
+
+    res.status(201).json({
+      success: true,
+      session: {
+        id: session.id,
+        name: session.session_name,
+        status: session.status,
+      },
+    })
+  } catch (error) {
+    console.error("[v0] Error:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.post("/api/whatsapp/sessions/:id/start", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params
+    console.log("[v0] Starting session:", id, "for user:", req.user.id)
+
+    const { data: session, error } = await supabase
+      .from("whatsapp_sessions")
+      .select("*")
+      .eq("id", id)
+      .eq("user_id", req.user.id)
+      .single()
+
+    if (error || !session) {
+      return res.status(404).json({ success: false, error: "Session not found or access denied" })
+    }
+
+    // Atualizar status
+    await supabase.from("whatsapp_sessions").update({ status: "connecting" }).eq("id", id)
+
+    // Inicializar WhatsApp em background
+    setImmediate(() => {
+      whatsappManager.initializeSession(id).catch((err) => {
+        console.error("[v0] Error initializing:", err)
+      })
+    })
+
+    res.json({ success: true, message: "Session starting" })
+  } catch (error) {
+    console.error("[v0] Error:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.delete("/api/whatsapp/sessions/:id", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params
+
+    // Verificar propriedade
+    const { data: session } = await supabase
+      .from("whatsapp_sessions")
+      .select("id")
+      .eq("id", id)
+      .eq("user_id", req.user.id)
+      .single()
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" })
+    }
+
+    // Desconectar WhatsApp
+    await whatsappManager.disconnectSession(id)
+
+    // Deletar do banco
+    await supabase.from("whatsapp_sessions").delete().eq("id", id)
+
+    res.json({ success: true })
+  } catch (error) {
+    console.error("[v0] Error:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.get("/api/whatsapp/sessions/:sessionId/contacts", requireAuth, async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    const limit = req.query.limit ? Number.parseInt(req.query.limit) : 50
+
+    console.log("[v0] GET /api/whatsapp/sessions/:sessionId/contacts:", sessionId)
+
+    const { data: session } = await supabase
+      .from("whatsapp_sessions")
+      .select("id")
+      .eq("id", sessionId)
+      .eq("user_id", req.user.id)
+      .single()
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" })
+    }
+
+    const { data: contacts, error } = await supabase
+      .from("contacts")
+      .select("id, name, profile_name, whatsapp_number, phone_number, profile_pic_url, last_message_at, created_at")
+      .eq("user_id", req.user.id)
+      .eq("session_id", sessionId)
+      .order("last_message_at", { ascending: false, nullsFirst: false })
+      .limit(limit)
+
+    if (error) throw error
+
+    const contactsList = contacts.map((c) => ({
+      id: c.id,
+      whatsappId: c.whatsapp_number || c.phone_number,
+      name: c.name || c.profile_name || c.whatsapp_number || "Sem nome",
+      phoneNumber: c.phone_number || c.whatsapp_number,
+      profilePicUrl: c.profile_pic_url,
+      lastMessageAt: c.last_message_at,
+    }))
+
     res.json({
       success: true,
-      data: contacts || [],
-      total: contacts?.length || 0,
+      contacts: contactsList,
+      total: contactsList.length,
     })
   } catch (error) {
     console.error("[v0] Error fetching contacts:", error)
@@ -228,338 +272,53 @@ app.get("/api/contacts", async (req, res) => {
   }
 })
 
-const sessionRequestCache = new Map()
-
-app.get("/api/whatsapp/sessions", async (req, res) => {
+app.get("/api/whatsapp/sessions/:sessionId/messages", requireAuth, async (req, res) => {
   try {
-    const cacheKey = "sessions_list"
-    const now = Date.now()
+    const { sessionId } = req.params
+    const { contactId } = req.query
 
-    // Check cache - 1 second cooldown
-    if (sessionRequestCache.has(cacheKey)) {
-      const lastRequest = sessionRequestCache.get(cacheKey)
-      if (now - lastRequest < 1000) {
-        return res.status(429).json({
-          error: true,
-          message: "Too many requests. Please wait.",
-          details: "Rate limit: 1 request per second",
-        })
-      }
-    }
+    console.log("[v0] GET messages for session:", sessionId, "contact:", contactId)
 
-    sessionRequestCache.set(cacheKey, now)
-
-    const authHeader = req.headers.authorization
-    let tenantId = null
-
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      const token = authHeader.substring(7)
-      try {
-        const {
-          data: { user },
-          error: authError,
-        } = await supabase.auth.getUser(token)
-
-        if (!authError && user) {
-          // Get tenant_id from user metadata or tenants table
-          const { data: tenant } = await supabase.from("tenants").select("id").eq("email", user.email).single()
-
-          if (tenant) {
-            tenantId = tenant.id
-            console.log("[v0] Found tenant for user:", user.email, "->", tenantId)
-          }
-        }
-      } catch (e) {
-        console.error("[v0] Error getting user from token:", e)
-      }
-    }
-
-    // If no tenant found from auth, try query param (fallback)
-    if (!tenantId && req.query.tenantId) {
-      tenantId = req.query.tenantId
-    }
-
-    console.log("[v0] Loading sessions for tenant:", tenantId || "ALL (no filter)")
-
-    let query = supabase.from("whatsapp_sessions").select("*")
-
-    if (tenantId) {
-      query = query.eq("tenant_id", tenantId)
-    } else {
-      console.warn("[v0] ⚠️ Loading sessions without tenant filter - this shows all sessions!")
-    }
-
-    const { data: sessions, error } = await query
-
-    if (error) {
-      console.error("[v0] Database error:", error)
-      return res.status(500).json({
-        error: true,
-        message: "Failed to fetch sessions",
-      })
-    }
-
-    const sessionsWithStatus = sessions.map((session) => ({
-      id: session.id,
-      name: session.name || "Unnamed",
-      status: session.status,
-      phone: session.phone_number,
-      qrCode: session.qr_code,
-      isConnected: whatsappManager.isSessionActive(session.id),
-    }))
-
-    console.log("[v0] Returning", sessionsWithStatus.length, "sessions")
-
-    res.json({
-      success: true,
-      sessions: sessionsWithStatus,
-    })
-  } catch (error) {
-    console.error("[v0] Error:", error)
-    res.status(500).json({
-      error: true,
-      message: "Failed to fetch sessions",
-    })
-  }
-})
-
-app.post("/api/whatsapp/sessions", async (req, res) => {
-  try {
-    console.log("[v0] ========== CREATE SESSION ==========")
-    console.log("[v0] Request body:", JSON.stringify(req.body))
-
-    const { name } = req.body
-
-    if (!name || typeof name !== "string" || name.trim() === "") {
-      console.log("[v0] ERROR: Invalid or missing name")
-      return res.status(400).json({
-        success: false,
-        error: "Name is required and must be a non-empty string",
-      })
-    }
-
-    const trimmedName = name.trim()
-    console.log("[v0] Creating session with name:", trimmedName)
-
-    console.log("[v0] Step 1: Looking for default tenant...")
-    const { data: existingTenants, error: tenantQueryError } = await supabase
-      .from("tenants")
-      .select("id, name, email")
-      .eq("email", "default@system.local")
-      .limit(1)
-
-    if (tenantQueryError) {
-      console.error("[v0] ERROR: Failed to query tenants:", tenantQueryError)
-      return res.status(500).json({
-        success: false,
-        error: "Database error querying tenants",
-      })
-    }
-
-    let tenantId
-
-    if (existingTenants && existingTenants.length > 0) {
-      tenantId = existingTenants[0].id
-      console.log("[v0] ✅ Using existing tenant:", tenantId)
-    } else {
-      console.log("[v0] Creating new default tenant...")
-      const { data: newTenant, error: tenantCreateError } = await supabase
-        .from("tenants")
-        .insert({
-          name: "Default System",
-          email: "default@system.local",
-        })
-        .select("id")
-        .single()
-
-      if (tenantCreateError || !newTenant) {
-        console.error("[v0] ERROR: Failed to create tenant:", tenantCreateError)
-        return res.status(500).json({
-          success: false,
-          error: "Failed to create tenant",
-        })
-      }
-
-      tenantId = newTenant.id
-      console.log("[v0] ✅ Created new tenant:", tenantId)
-    }
-
-    console.log("[v0] Step 2: Creating WhatsApp session in database...")
-    const sessionInsertData = {
-      tenant_id: tenantId,
-      name: trimmedName,
-      status: "qr",
-      is_active: true,
-    }
-
-    console.log("[v0] Insert data:", JSON.stringify(sessionInsertData))
-
-    const { data: createdSession, error: sessionCreateError } = await supabase
+    const { data: session } = await supabase
       .from("whatsapp_sessions")
-      .insert(sessionInsertData)
-      .select("id, tenant_id, name, status, is_active")
+      .select("id")
+      .eq("id", sessionId)
+      .eq("user_id", req.user.id)
       .single()
 
-    if (sessionCreateError || !createdSession) {
-      console.error("[v0] ERROR: Failed to create session:", sessionCreateError)
-      return res.status(500).json({
-        success: false,
-        error: "Failed to create WhatsApp session",
-        details: sessionCreateError?.message,
-      })
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" })
     }
 
-    console.log("[v0] ✅ Session created in database")
-    console.log("[v0] Session ID:", createdSession.id)
-    console.log("[v0] Session name:", createdSession.name)
+    let query = supabase
+      .from("messages")
+      .select("id, contact_id, direction, body, media_url, type, timestamp, status, created_at")
+      .eq("session_id", sessionId)
+      .eq("user_id", req.user.id)
 
-    const responseData = {
-      success: true,
-      session: {
-        id: createdSession.id,
-        name: createdSession.name,
-        status: createdSession.status,
-        tenant_id: createdSession.tenant_id,
-        isConnected: false,
-      },
-      message: "Session created successfully. Call /start to initialize WhatsApp.",
+    if (contactId) {
+      query = query.eq("contact_id", contactId)
     }
 
-    console.log("[v0] ✅ Sending response:", JSON.stringify(responseData, null, 2))
-    console.log("[v0] ========================================")
+    const { data: messages, error } = await query.order("timestamp", { ascending: true }).limit(100)
 
-    return res.status(201).json(responseData)
+    if (error) throw error
+
+    const normalizedMessages = messages.map((m) => ({
+      id: m.id,
+      contactId: m.contact_id,
+      fromMe: m.direction === "outgoing",
+      body: m.body,
+      mediaUrl: m.media_url,
+      mediaType: m.type,
+      timestamp: m.timestamp,
+      status: m.status,
+    }))
+
+    res.json({ success: true, messages: normalizedMessages })
   } catch (error) {
-    console.error("[v0] ========== UNEXPECTED ERROR ==========")
-    console.error("[v0] ERROR:", error.message)
-    console.error("[v0] STACK:", error.stack)
-    console.error("[v0] =======================================")
-
-    return res.status(500).json({
-      success: false,
-      error: "Unexpected server error",
-      details: error.message,
-    })
-  }
-})
-
-app.post("/api/whatsapp/sessions/:id/start", async (req, res) => {
-  try {
-    const { id } = req.params
-    console.log("[v0] ========== START SESSION ==========")
-    console.log("[v0] Session ID:", id)
-
-    if (!id || id === "undefined" || id === "null" || id.trim() === "") {
-      console.error("[v0] ERROR: Invalid or missing session ID")
-      return res.status(400).json({
-        success: false,
-        error: "Valid session ID is required",
-      })
-    }
-
-    const { data: sessions, error: fetchError } = await supabase
-      .from("whatsapp_sessions")
-      .select("*")
-      .eq("id", id)
-      .limit(1)
-
-    if (fetchError) {
-      console.error("[v0] ERROR: Database error:", fetchError)
-      return res.status(500).json({
-        success: false,
-        error: "Database error",
-      })
-    }
-
-    if (!sessions || sessions.length === 0) {
-      console.error("[v0] ERROR: Session not found:", id)
-      return res.status(404).json({
-        success: false,
-        error: "Session not found",
-      })
-    }
-
-    const session = sessions[0]
-    console.log("[v0] ✅ Found session:", session.name || session.id)
-
-    const { error: updateError } = await supabase
-      .from("whatsapp_sessions")
-      .update({ status: "initializing" })
-      .eq("id", id)
-
-    if (updateError) {
-      console.error("[v0] ERROR: Failed to update session status:", updateError)
-    }
-
-    console.log("[v0] Initializing WhatsApp client asynchronously...")
-    setImmediate(async () => {
-      try {
-        await whatsappManager.initializeSession(id)
-        console.log("[v0] ✅ WhatsApp client initialized successfully")
-      } catch (error) {
-        console.error("[v0] ERROR initializing WhatsApp:", error)
-        await supabase
-          .from("whatsapp_sessions")
-          .update({
-            status: "error",
-            error_message: error.message,
-          })
-          .eq("id", id)
-      }
-    })
-
-    console.log("[v0] ✅ Session start initiated")
-    console.log("[v0] ======================================")
-
-    return res.status(200).json({
-      success: true,
-      message: "Session initialization started. QR code will be emitted via WebSocket.",
-      sessionId: id,
-    })
-  } catch (error) {
-    console.error("[v0] ========== ERROR ==========")
-    console.error("[v0]", error)
-    console.error("[v0] ==============================")
-
-    return res.status(500).json({
-      success: false,
-      error: "Failed to start session",
-      details: error.message,
-    })
-  }
-})
-
-app.post("/api/whatsapp/sessions/:sessionId/disconnect", async (req, res) => {
-  try {
-    const { sessionId } = req.params
-    console.log("[v0] POST /api/whatsapp/sessions/:sessionId/disconnect:", sessionId)
-
-    await whatsappManager.disconnectSession(sessionId)
-
-    res.json({
-      success: true,
-      message: "Sessão desconectada com sucesso",
-    })
-  } catch (error) {
-    console.error("Error disconnecting session:", error)
-    res.status(500).json({ error: error.message })
-  }
-})
-
-app.post("/api/whatsapp/sessions/:sessionId/connect", async (req, res) => {
-  try {
-    const { sessionId } = req.params
-    console.log("[v0] POST /api/whatsapp/sessions/:sessionId/connect:", sessionId)
-
-    await whatsappManager.initializeSession(sessionId)
-
-    res.json({
-      success: true,
-      message: "Sessão iniciando - aguarde o QR code",
-    })
-  } catch (error) {
-    console.error("Error connecting session:", error)
-    res.status(500).json({ error: error.message })
+    console.error("[v0] Error:", error)
+    res.status(500).json({ success: false, error: error.message })
   }
 })
 
@@ -841,6 +600,95 @@ app.get("/api/debug/whatsapp", async (req, res) => {
   }
 })
 
+app.get("/api/whatsapp/chatbot/flows", requireAuth, async (req, res) => {
+  try {
+    const { data: flows, error } = await supabase
+      .from("chatbot_flows")
+      .select("*")
+      .eq("user_id", req.user.id)
+      .order("created_at", { ascending: false })
+
+    if (error) throw error
+
+    res.json({ success: true, flows })
+  } catch (error) {
+    console.error("[v0] Error fetching chatbot flows:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.post("/api/whatsapp/chatbot/flows", requireAuth, async (req, res) => {
+  try {
+    const { name, whatsapp_session_id, prompt, is_active, business_hours } = req.body
+
+    if (!name || !whatsapp_session_id) {
+      return res.status(400).json({ success: false, error: "Name and session are required" })
+    }
+
+    const { data: session } = await supabase
+      .from("whatsapp_sessions")
+      .select("id")
+      .eq("id", whatsapp_session_id)
+      .eq("user_id", req.user.id)
+      .single()
+
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Session not found" })
+    }
+
+    const { data: flow, error } = await supabase
+      .from("chatbot_flows")
+      .insert([
+        {
+          user_id: req.user.id,
+          tenant_id: req.user.tenant_id,
+          whatsapp_session_id,
+          name,
+          prompt: prompt || "Você é um assistente útil.",
+          is_active: is_active !== undefined ? is_active : false,
+          business_hours: business_hours || {},
+        },
+      ])
+      .select()
+      .single()
+
+    if (error) throw error
+
+    res.status(201).json({ success: true, flow })
+  } catch (error) {
+    console.error("[v0] Error creating chatbot flow:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+app.put("/api/whatsapp/chatbot/flows/:id", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params
+    const updates = req.body
+
+    // Verificar propriedade
+    const { data: flow } = await supabase
+      .from("chatbot_flows")
+      .select("id")
+      .eq("id", id)
+      .eq("user_id", req.user.id)
+      .single()
+
+    if (!flow) {
+      return res.status(404).json({ success: false, error: "Flow not found" })
+    }
+
+    const { data: updated, error } = await supabase.from("chatbot_flows").update(updates).eq("id", id).select().single()
+
+    if (error) throw error
+
+    res.json({ success: true, flow: updated })
+  } catch (error) {
+    console.error("[v0] Error updating chatbot flow:", error)
+    res.status(500).json({ success: false, error: error.message })
+  }
+})
+
 io.on("connection", (socket) => {
   console.log(`[v0] 🔌 Client connected: ${socket.id}`)
 
@@ -874,40 +722,9 @@ app.use((req, res) => {
   })
 })
 
-const PORT = Number.parseInt(process.env.PORT, 10) || 8080
-
+const PORT = process.env.PORT || 5000
 httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`
-╔═══════════════════════════════════╗
-║   ✅ SERVIDOR ONLINE!             ║
-╠═══════════════════════════════════╣
-║ 🔗 Porta: ${PORT.toString().padEnd(23)}║
-║ 🌐 Health: /health                ║
-║ 📱 Frontend: ${(process.env.FRONTEND_URL || "não configurado").substring(0, 18).padEnd(18)}║
-║ 💬 WhatsApp: ATIVO                ║
-╚═══════════════════════════════════╝
-  `)
-
-  console.log("API online", PORT)
+  console.log(`✅ Server running on port ${PORT}`)
 })
-
-process.on("SIGTERM", () => {
-  console.log("SIGTERM recebido, fechando servidor...")
-  httpServer.close(() => {
-    console.log("Servidor fechado")
-    process.exit(0)
-  })
-})
-
-process.on("unhandledRejection", (err) => {
-  console.error("❌ Unhandled Rejection:", err)
-})
-
-process.on("uncaughtException", (err) => {
-  console.error("❌ Uncaught Exception:", err)
-  process.exit(1)
-})
-
-global.io = io
 
 export { io }
